@@ -1,0 +1,53 @@
+# Bundled music manifest (draft, issue #48). Licence evidence for every entry
+# is in SOURCES.md next to this file.
+#
+# The audio files are NOT committed yet. The follow-up "Bundle the approved
+# CC0 tracks" adds them under assets/music/ (Git LFS), fills in `sha256` and
+# the app verifies each file against it before use.
+#
+# Fields per [[track]]:
+#   id          stable identifier used by projects and the CLI (kebab-case)
+#   title       track title as on the source page
+#   artist      artist as on the source page
+#   file        file name under assets/music/
+#   licence     SPDX identifier; must be "CC0-1.0"
+#   sha256      lower-case hex SHA-256 of the shipped file ("" until measured)
+#   source_url  page that states the licence and offers the download
+
+version = 1
+
+[[track]]
+id = "arpent"
+title = "Arpent"
+artist = "Kevin MacLeod"
+file = "arpent.mp3"
+licence = "CC0-1.0"
+sha256 = ""
+source_url = "https://freepd.com/electronic.php"
+
+[[track]]
+id = "3-am-west-end"
+title = "3 am West End"
+artist = "statusq"
+file = "3-am-west-end.mp3"
+licence = "CC0-1.0"
+sha256 = ""
+source_url = "https://freepd.com/electronic.php"
+
+[[track]]
+id = "beat-one"
+title = "Beat One"
+artist = "Kevin MacLeod"
+file = "beat-one.mp3"
+licence = "CC0-1.0"
+sha256 = ""
+source_url = "https://freepd.com/electronic.php"
+
+[[track]]
+id = "backbeat"
+title = "Backbeat"
+artist = "Kevin MacLeod"
+file = "backbeat.mp3"
+licence = "CC0-1.0"
+sha256 = ""
+source_url = "https://freepd.com/electronic.php"
