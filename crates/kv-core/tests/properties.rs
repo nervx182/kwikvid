@@ -77,6 +77,7 @@ fn candidate(p: &Project, (kind, a, b, c): Raw) -> Option<Command> {
                 },
                 hilights: vec![Micros(0)],
                 clip_audio: c % 2 == 0,
+                chapters: Vec::new(),
             },
         },
         1 => Command::RemoveMedia {

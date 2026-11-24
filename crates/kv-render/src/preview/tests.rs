@@ -158,6 +158,7 @@ fn media_item(id: u64) -> MediaItem {
         kind: MediaKind::Video,
         hilights: vec![],
         clip_audio: false,
+        chapters: Vec::new(),
     }
 }
 

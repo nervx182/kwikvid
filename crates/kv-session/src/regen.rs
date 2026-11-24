@@ -430,6 +430,7 @@ mod tests {
                     kind: MediaKind::Video,
                     hilights: vec![Micros(SEC)],
                     clip_audio: false,
+                    chapters: Vec::new(),
                 },
             })
             .unwrap();
