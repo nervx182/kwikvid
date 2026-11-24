@@ -1,0 +1,107 @@
+# Tauri preview spike (issue #5). Not part of the merge gate: it only runs when
+# the spike or this file changes, or by hand (Actions > preview-spike > Run workflow).
+# Builds the unsigned .app (ADR 0004), runs the automated benchmark on the
+# runner's GUI session and uploads the .app and the measurement log.
+name: preview-spike
+
+on:
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: "Seconds per preview path in the benchmark"
+        default: "10"
+  pull_request:
+    paths:
+      - "spikes/tauri-preview/**"
+      - ".github/workflows/preview-spike.yml"
+
+concurrency:
+  group: preview-spike-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  BENCH_SECONDS: ${{ inputs.seconds || '10' }}
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: spikes/tauri-preview
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: spikes/tauri-preview
+      - name: Unit tests
+        run: cargo test --release --locked
+      - name: Build unsigned .app
+        run: npx --yes @tauri-apps/cli@2.12.6 build --bundles app -- --locked
+      - name: Locate bundle
+        id: app
+        run: |
+          APP=$(find target/release/bundle/macos -maxdepth 1 -name '*.app' | head -1)
+          test -n "$APP"
+          echo "app=$APP" >> "$GITHUB_OUTPUT"
+          echo "bin=$(find "$APP/Contents/MacOS" -type f -perm -u+x | head -1)" >> "$GITHUB_OUTPUT"
+          system_profiler SPHardwareDataType SPDisplaysDataType | tee "$RUNNER_TEMP/machine.txt" || true
+      - name: Run benchmark (GUI session)
+        timeout-minutes: 6
+        run: |
+          LOG="$RUNNER_TEMP/preview-bench-macos.log"
+          cat "$RUNNER_TEMP/machine.txt" > "$LOG" || true
+          ( sleep 18; screencapture -x "$RUNNER_TEMP/screenshot-native.png" || true ) &
+          ( sleep 30; screencapture -x "$RUNNER_TEMP/screenshot-raw.png" || true ) &
+          "${{ steps.app.outputs.bin }}" --bench --seconds "$BENCH_SECONDS" --log "$LOG" || echo "app exited with code $?"
+          grep -E '^(SUMMARY|SKIP|ERROR|END)' "$LOG" || true
+          grep -q '^END code=0' "$LOG"
+      - name: Zip .app (keeps symlinks and permissions)
+        if: always()
+        run: ditto -c -k --keepParent "${{ steps.app.outputs.app }}" "$RUNNER_TEMP/kv-preview-spike-macos-arm64.zip"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kv-preview-spike-macos-arm64
+          path: ${{ runner.temp }}/kv-preview-spike-macos-arm64.zip
+          if-no-files-found: warn
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: preview-bench-macos
+          path: |
+            ${{ runner.temp }}/preview-bench-macos.log
+            ${{ runner.temp }}/screenshot-*.png
+          if-no-files-found: warn
+
+  # Optional Linux numbers under a virtual X display (software GL). Indicative only.
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: spikes/tauri-preview
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: spikes/tauri-preview
+      - name: System libraries
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev xvfb
+      - run: cargo build --release --locked
+      - name: Run benchmark (xvfb)
+        timeout-minutes: 6
+        run: |
+          LOG="$RUNNER_TEMP/preview-bench-linux.log"
+          xvfb-run -a -s "-screen 0 1920x1080x24" ./target/release/kv-preview-spike --bench --seconds "$BENCH_SECONDS" --log "$LOG" || echo "app exited with code $?"
+          grep -E '^(SUMMARY|SKIP|ERROR|END)' "$LOG" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: preview-bench-linux
+          path: ${{ runner.temp }}/preview-bench-linux.log
+          if-no-files-found: warn
