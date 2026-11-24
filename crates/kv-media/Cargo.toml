@@ -16,13 +16,14 @@ kv-core = { path = "../kv-core" }
 serde.workspace = true
 thiserror.workspace = true
 ffmpeg-next = { version = "9.1", default-features = false, features = ["codec", "format", "software-scaling"], optional = true }
+tracing = { version = "0.1", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 serde_json.workspace = true
 hound.workspace = true
 # Same crate as the backend; the tests encode their own fixture clips.
-ffmpeg-next = { version = "9.1", default-features = false, features = ["codec", "format"] }
-# Tagged fixture clips for the decode tests.
+ffmpeg-next = { version = "9.1", default-features = false, features = ["codec", "format", "software-scaling"] }
+# Tagged fixture clips for the decode and encode tests.
 kv-testkit = { path = "../kv-testkit", features = ["video"] }
 
 [lints]
