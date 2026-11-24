@@ -35,8 +35,10 @@ cargo nextest run --workspace     # or: cargo test --workspace
 cargo deny check                  # if cargo-deny is installed
 ```
 
-The merge gate (`.github/workflows/ci.yml`) runs exactly these plus a macOS
-arm64 build and test. Keep it fast: target under 10 minutes total. Slow,
+The merge gate (`.github/workflows/ci.yml`) runs exactly these on Linux for
+every PR. The macOS arm64 build and test (`mac-smoke`) runs only on pushes to
+`main` and manual dispatch, because Mac minutes cost 10x on a private repo; if
+it goes red on `main`, fixing it is the top priority. Keep it fast: target under 10 minutes total. Slow,
 large-data or benchmark tests belong in the full regression
 (`.github/workflows/regression.yml`, manually dispatched): mark them
 `#[ignore = "regression"]`.
