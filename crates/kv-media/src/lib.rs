@@ -17,8 +17,10 @@ use thiserror::Error;
 
 #[cfg(feature = "ffmpeg")]
 mod ffmpeg;
+mod frame;
 #[cfg(feature = "ffmpeg")]
 pub use ffmpeg::FfmpegBackend;
+pub use frame::{ExportSettings, PixelFormat, VideoCodec, VideoFrame};
 
 /// Result alias for this crate.
 pub type Result<T, E = MediaError> = std::result::Result<T, E>;
@@ -37,6 +39,15 @@ pub enum MediaError {
     /// The file opened but holds no audio or video stream.
     #[error("{0:?} has no audio or video stream")]
     NoStreams(PathBuf),
+
+    /// A [`VideoFrame`] was built from data that does not match its size and
+    /// pixel format.
+    #[error("invalid video frame: {0}")]
+    InvalidFrame(String),
+
+    /// [`ExportSettings::validate`] found settings that cannot be encoded.
+    #[error("invalid export settings: {0}")]
+    InvalidExportSettings(String),
 }
 
 /// A platform media backend. Implementations must be usable from background
