@@ -15,6 +15,7 @@ fn clip(id: u64, dur_secs: i64) -> MediaItem {
         duration: secs(dur_secs),
         kind: MediaKind::Video,
         hilights: vec![secs(1)],
+        clip_audio: false,
     }
 }
 
@@ -631,4 +632,457 @@ fn project_json_has_version_1() {
     assert!(err.to_string().contains("unsupported project version 2"));
     let missing = json.replacen(r#""version":1,"#, "", 1);
     assert!(serde_json::from_str::<Project>(&missing).is_err());
+}
+
+fn ms(v: i64) -> Micros {
+    Micros(v * 1_000)
+}
+
+/// Project with an EDL: clip 1 0..4 s, clip 2 2..6 s at 50% speed (8 s on the
+/// timeline), clip 1 6..9 s.
+fn project_with_edl() -> Project {
+    let mut p = project();
+    let mut slow = seg(2, 2, 6, 4);
+    slow.speed = Speed(50);
+    p.apply(Command::ReplaceEdl {
+        section: S,
+        edl: Edl {
+            segments: vec![seg(1, 0, 4, 0), slow, seg(1, 6, 9, 12)],
+        },
+    })
+    .unwrap();
+    p
+}
+
+fn move_cut(cut: usize, to: Micros) -> Command {
+    Command::MoveCut {
+        section: S,
+        cut,
+        to,
+    }
+}
+
+#[test]
+fn move_cut_later_trims_next_and_extends_previous() {
+    let mut p = project_with_edl();
+    let ev = p.apply(move_cut(1, ms(4_500))).unwrap();
+    assert_eq!(
+        ev,
+        Event::CutMoved {
+            section: S,
+            cut: 1,
+            at: ms(4_500)
+        }
+    );
+    let segs = &section(&p).edit.segments;
+    assert_eq!((segs[0].src_in, segs[0].src_out), (secs(0), ms(4_500)));
+    // 0.5 s of timeline at 50% speed is 0.25 s of source.
+    assert_eq!((segs[1].src_in, segs[1].src_out), (ms(2_250), secs(6)));
+    assert_eq!(segs[1].timeline_start, ms(4_500));
+    // Repacked: segment 1 is now 7.5 s long, so the total length is unchanged.
+    assert_eq!(segs[2].timeline_start, secs(12));
+}
+
+#[test]
+fn move_cut_earlier_scales_by_speed() {
+    let mut p = project_with_edl();
+    // Cut 2 sits at 12 s, between the slow segment and clip 1 6..9 s.
+    p.apply(move_cut(2, secs(10))).unwrap();
+    let segs = &section(&p).edit.segments;
+    // Slow segment loses 2 s of timeline = 1 s of source.
+    assert_eq!(segs[1].src_out, secs(5));
+    // Next segment gains 2 s of source at normal speed.
+    assert_eq!(segs[2].src_in, secs(4));
+    assert_eq!(segs[2].timeline_start, secs(10));
+    assert_eq!(segs[2].timeline_len(), secs(5));
+}
+
+#[test]
+fn move_cut_with_crossfade() {
+    let mut p = project();
+    let mut b = seg(2, 2, 6, 3);
+    b.transition = Transition::Crossfade { duration: secs(1) };
+    p.apply(Command::ReplaceEdl {
+        section: S,
+        edl: Edl {
+            segments: vec![seg(1, 0, 4, 0), b],
+        },
+    })
+    .unwrap();
+    let ev = p.apply(move_cut(1, ms(3_500))).unwrap();
+    assert_eq!(
+        ev,
+        Event::CutMoved {
+            section: S,
+            cut: 1,
+            at: ms(3_500)
+        }
+    );
+    let segs = &section(&p).edit.segments;
+    assert_eq!(segs[0].src_out, ms(4_500));
+    assert_eq!(segs[1].src_in, ms(2_500));
+    // A cut that would leave the crossfade longer than its segment is
+    // rejected by the EDL check.
+    assert!(matches!(
+        rejects(&p, move_cut(1, ms(6_200))),
+        CoreError::InvalidSegment { index: 1, .. }
+    ));
+}
+
+#[test]
+fn move_cut_invalid() {
+    let p = project_with_edl();
+    for cut in [0, 3, 9] {
+        assert_eq!(
+            rejects(&p, move_cut(cut, secs(1))),
+            CoreError::CutIndexOutOfRange { cut, len: 3 }
+        );
+    }
+    assert_eq!(
+        rejects(
+            &p,
+            Command::MoveCut {
+                section: SectionId(8),
+                cut: 1,
+                to: secs(1)
+            }
+        ),
+        CoreError::UnknownSection(SectionId(8))
+    );
+    // Previous segment would be 99 ms long.
+    assert_eq!(
+        rejects(&p, move_cut(1, ms(99))),
+        CoreError::CutTooShort {
+            cut: 1,
+            to: ms(99),
+            index: 0,
+            min: Segment::MIN_LEN
+        }
+    );
+    // Exactly 100 ms is allowed.
+    p.clone().apply(move_cut(1, ms(100))).unwrap();
+    // Cut 2 (at 12 s) moved to 14.95 s leaves clip 1 6..9 s with 50 ms.
+    assert_eq!(
+        rejects(&p, move_cut(2, ms(14_950))),
+        CoreError::CutTooShort {
+            cut: 2,
+            to: ms(14_950),
+            index: 2,
+            min: Segment::MIN_LEN
+        }
+    );
+    // Earlier than the start of the timeline, previous segment vanishes.
+    assert!(matches!(
+        rejects(&p, move_cut(1, secs(-1))),
+        CoreError::CutTooShort { index: 0, .. }
+    ));
+    // Clip 1 is 10 s long: extending 0..4 s by 7 s runs past its end.
+    // (Next segment is long enough: 8 s of timeline minus 7 s.)
+    assert_eq!(
+        rejects(&p, move_cut(1, secs(11))),
+        CoreError::CutOutsideMedia {
+            cut: 1,
+            to: secs(11),
+            index: 0
+        }
+    );
+    // Moving a cut 2 s earlier pulls the next segment's src_in (1 s) before
+    // the start of its media.
+    let mut q = project();
+    q.apply(Command::ReplaceEdl {
+        section: S,
+        edl: Edl {
+            segments: vec![seg(2, 0, 10, 0), seg(1, 1, 3, 10)],
+        },
+    })
+    .unwrap();
+    assert_eq!(
+        rejects(&q, move_cut(1, secs(8))),
+        CoreError::CutOutsideMedia {
+            cut: 1,
+            to: secs(8),
+            index: 1
+        }
+    );
+    let err = CoreError::CutTooShort {
+        cut: 1,
+        to: ms(99),
+        index: 0,
+        min: Segment::MIN_LEN,
+    };
+    assert!(err.to_string().contains("shorter than the minimum"));
+}
+
+#[test]
+fn move_cut_undo() {
+    let mut h = History::new(project_with_edl());
+    let original = h.project().clone();
+    h.apply(move_cut(1, ms(4_500))).unwrap();
+    assert_ne!(h.project(), &original);
+    h.undo();
+    assert_eq!(h.project(), &original);
+}
+
+#[test]
+fn set_clip_audio() {
+    let mut p = project();
+    assert!(!p.media_item(MediaId(1)).unwrap().clip_audio);
+    let cmd = Command::SetClipAudio {
+        media_id: MediaId(1),
+        enabled: true,
+    };
+    let mut h = History::new(p.clone());
+    assert_eq!(
+        h.apply(cmd.clone()).unwrap(),
+        Event::ClipAudioSet {
+            media_id: MediaId(1),
+            enabled: true
+        }
+    );
+    assert!(h.project().media_item(MediaId(1)).unwrap().clip_audio);
+    assert!(!h.project().media_item(MediaId(2)).unwrap().clip_audio);
+    h.undo();
+    assert_eq!(h.project(), &p);
+    p.apply(cmd).unwrap();
+    assert_eq!(
+        rejects(
+            &p,
+            Command::SetClipAudio {
+                media_id: MediaId(9),
+                enabled: false
+            }
+        ),
+        CoreError::UnknownMedia(MediaId(9))
+    );
+}
+
+#[test]
+fn set_music_volume() {
+    let p = project();
+    let mut h = History::new(p.clone());
+    for percent in [0, 37, 100] {
+        assert_eq!(
+            h.apply(Command::SetMusicVolume { percent }).unwrap(),
+            Event::MusicVolumeSet { percent }
+        );
+        assert_eq!(h.project().settings.music_volume_percent, percent);
+    }
+    for percent in [101, 255] {
+        assert_eq!(
+            rejects(h.project(), Command::SetMusicVolume { percent }),
+            CoreError::InvalidMusicVolume(percent)
+        );
+    }
+    while h.undo().is_some() {}
+    assert_eq!(h.project(), &p);
+    assert_eq!(p.settings.music_volume_percent, 100);
+}
+
+#[test]
+fn set_aspect_ratio() {
+    let p = project();
+    let mut h = History::new(p.clone());
+    let aspect = AspectRatio::Portrait9x16;
+    assert_eq!(
+        h.apply(Command::SetAspectRatio { aspect }).unwrap(),
+        Event::AspectRatioSet { aspect }
+    );
+    assert_eq!(h.project().settings.aspect_ratio, aspect);
+    h.undo();
+    assert_eq!(h.project(), &p);
+    let json = serde_json::to_string(&Command::SetAspectRatio {
+        aspect: AspectRatio::Square1x1,
+    })
+    .unwrap();
+    assert_eq!(json, r#"{"type":"set_aspect_ratio","aspect":"square1x1"}"#);
+}
+
+#[test]
+fn set_style() {
+    let p = project();
+    assert_eq!(section(&p).style, StylePreset::Cut);
+    let mut h = History::new(p.clone());
+    for style in [StylePreset::Smooth, StylePreset::Action, StylePreset::Cut] {
+        assert_eq!(
+            h.apply(Command::SetStyle { section: S, style }).unwrap(),
+            Event::StyleSet { section: S, style }
+        );
+        assert_eq!(section(h.project()).style, style);
+    }
+    while h.undo().is_some() {}
+    assert_eq!(h.project(), &p);
+    assert_eq!(
+        rejects(
+            &p,
+            Command::SetStyle {
+                section: SectionId(2),
+                style: StylePreset::Smooth
+            }
+        ),
+        CoreError::UnknownSection(SectionId(2))
+    );
+    let json = serde_json::to_string(&Command::SetStyle {
+        section: S,
+        style: StylePreset::Action,
+    })
+    .unwrap();
+    assert_eq!(json, r#"{"type":"set_style","section":1,"style":"action"}"#);
+}
+
+fn title(text: &str, duration: Micros) -> Option<TitleCard> {
+    Some(TitleCard {
+        text: text.into(),
+        duration,
+    })
+}
+
+#[test]
+fn set_title_card() {
+    let p = project();
+    assert_eq!(section(&p).title, None);
+    let mut h = History::new(p.clone());
+    let t = title("Summer in Lisbon", secs(2));
+    assert_eq!(
+        h.apply(Command::SetTitleCard {
+            section: S,
+            title: t.clone()
+        })
+        .unwrap(),
+        Event::TitleCardSet {
+            section: S,
+            present: true
+        }
+    );
+    assert_eq!(section(h.project()).title, t);
+    let edge = [
+        title("a", TitleCard::MIN_DURATION),
+        title(&"é".repeat(80), TitleCard::MAX_DURATION),
+    ];
+    for t in edge {
+        h.apply(Command::SetTitleCard {
+            section: S,
+            title: t,
+        })
+        .unwrap();
+    }
+    assert_eq!(
+        h.apply(Command::SetTitleCard {
+            section: S,
+            title: None
+        })
+        .unwrap(),
+        Event::TitleCardSet {
+            section: S,
+            present: false
+        }
+    );
+    assert_eq!(section(h.project()).title, None);
+    while h.undo().is_some() {}
+    assert_eq!(h.project(), &p);
+}
+
+#[test]
+fn set_title_card_invalid() {
+    let p = project();
+    let set = |title| Command::SetTitleCard { section: S, title };
+    for (text, chars) in [("", 0), ("   ", 3), (&*"x".repeat(81), 81)] {
+        assert_eq!(
+            rejects(&p, set(title(text, secs(2)))),
+            CoreError::InvalidTitleText { chars, max: 80 }
+        );
+    }
+    for duration in [ms(499), ms(5_001), Micros(0), secs(-1)] {
+        assert_eq!(
+            rejects(&p, set(title("Hi", duration))),
+            CoreError::InvalidTitleDuration {
+                duration,
+                min: TitleCard::MIN_DURATION,
+                max: TitleCard::MAX_DURATION
+            }
+        );
+    }
+    assert_eq!(
+        rejects(
+            &p,
+            Command::SetTitleCard {
+                section: SectionId(3),
+                title: None
+            }
+        ),
+        CoreError::UnknownSection(SectionId(3))
+    );
+}
+
+/// A project file written before clip audio, styles and title cards existed.
+const PRE_M2_PROJECT: &str = r#"{
+  "version": 1,
+  "id": 3,
+  "media": [
+    {"id": 1, "path": "clips/GX010001.MP4", "duration": 10000000,
+     "kind": "video", "hilights": [1000000]}
+  ],
+  "sections": [
+    {"id": 1, "music": {"path": "music/song.mp3", "duration": 60000000},
+     "target_length": {"type": "fixed", "length": 30000000},
+     "pins": [], "excludes": [], "seed": 5,
+     "edit": {"segments": [
+       {"media_id": 1, "src_in": 0, "src_out": 2000000, "timeline_start": 0,
+        "transition": {"type": "cut"}, "speed": 100}
+     ]}}
+  ],
+  "settings": {"aspect_ratio": "portrait9x16", "music_volume_percent": 80}
+}"#;
+
+#[test]
+fn pre_m2_project_file_loads_with_defaults() {
+    let p: Project = serde_json::from_str(PRE_M2_PROJECT).unwrap();
+    assert!(!p.media[0].clip_audio);
+    let s = p.section(S).unwrap();
+    assert_eq!(s.style, StylePreset::Cut);
+    assert_eq!(s.title, None);
+    assert_eq!(s.seed, 5);
+    assert_eq!(p.settings.aspect_ratio, AspectRatio::Portrait9x16);
+    assert_eq!(p.settings.music_volume_percent, 80);
+    // Saving again still writes version 1, now with the new fields.
+    let value = serde_json::to_value(&p).unwrap();
+    assert_eq!(value["version"], 1);
+    assert_eq!(value["media"][0]["clip_audio"], false);
+    assert_eq!(value["sections"][0]["style"], "cut");
+    assert!(value["sections"][0]["title"].is_null());
+}
+
+#[test]
+fn new_fields_round_trip_through_json() {
+    let mut p = project_with_edl();
+    for cmd in [
+        Command::SetClipAudio {
+            media_id: MediaId(2),
+            enabled: true,
+        },
+        Command::SetStyle {
+            section: S,
+            style: StylePreset::Smooth,
+        },
+        Command::SetTitleCard {
+            section: S,
+            title: title("Ride", secs(3)),
+        },
+        Command::SetMusicVolume { percent: 40 },
+        Command::SetAspectRatio {
+            aspect: AspectRatio::Square1x1,
+        },
+        move_cut(1, ms(4_500)),
+    ] {
+        let json = serde_json::to_string(&cmd).unwrap();
+        assert_eq!(serde_json::from_str::<Command>(&json).unwrap(), cmd);
+        let ev = p.apply(cmd).unwrap();
+        let json = serde_json::to_string(&ev).unwrap();
+        assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), ev);
+    }
+    let json = serde_json::to_string(&p).unwrap();
+    assert_eq!(serde_json::from_str::<Project>(&json).unwrap(), p);
+    assert_eq!(
+        serde_json::to_string(&move_cut(2, Micros(7))).unwrap(),
+        r#"{"type":"move_cut","section":1,"cut":2,"to":7}"#
+    );
 }
