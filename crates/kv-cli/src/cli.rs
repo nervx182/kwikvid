@@ -5,6 +5,8 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
 
+use kv_media::Rational;
+
 use crate::spec::{self, ClipDuration, Length, RangeSpec};
 
 /// kwikvid: beat-synced automatic video edits from clips and a song.
@@ -19,7 +21,7 @@ pub struct Cli {
 pub enum Command {
     /// Analyse a music file: tempo, beats and first beat times.
     AnalyzeMusic(AnalyzeMusicArgs),
-    /// Build the automatic edit for clips and a song.
+    /// Build the automatic edit for clips and a song and render it to MP4.
     Edit(EditArgs),
 }
 
@@ -37,8 +39,9 @@ pub struct AnalyzeMusicArgs {
 
 #[derive(Debug, Args)]
 pub struct EditArgs {
-    /// Clip files, or directories whose .mp4/.mov/.m4v files are used in name
-    /// order. The edit follows this order.
+    /// Clip files, or directories whose .mp4/.mov/.m4v files are used
+    /// (case-insensitive) in recording order: by creation time, then by name.
+    /// The edit follows this order.
     #[arg(long, value_name = "FILE|DIR", num_args = 1.., required = true)]
     pub clips: Vec<PathBuf>,
     /// Music file (WAV, MP3, AAC/M4A or FLAC).
@@ -61,6 +64,22 @@ pub struct EditArgs {
     /// separated or repeated (mainly for tests).
     #[arg(long, value_name = "CLIP=SECONDS", value_delimiter = ',', value_parser = spec::parse_clip_duration)]
     pub durations: Vec<ClipDuration>,
+    /// Output MP4 file (required unless --dry-run).
+    #[arg(long, value_name = "FILE", required_unless_present = "dry_run")]
+    pub out: Option<PathBuf>,
+    /// Output size WIDTHxHEIGHT [default: 1920x1080].
+    #[arg(long, value_name = "WxH", value_parser = spec::parse_size)]
+    pub size: Option<(u32, u32)>,
+    /// Output frame rate, e.g. 30 or 30000/1001 [default: 30].
+    #[arg(long, value_name = "FPS", value_parser = spec::parse_fps)]
+    pub fps: Option<Rational>,
+    /// Replace --out if it exists (otherwise an existing file is an error,
+    /// exit code 2).
+    #[arg(long)]
+    pub overwrite: bool,
+    /// No progress or summary on stderr; errors are still printed.
+    #[arg(long, short)]
+    pub quiet: bool,
     /// Print the edit decision list instead of rendering a video.
     #[arg(long)]
     pub dry_run: bool,
