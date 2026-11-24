@@ -28,6 +28,21 @@ pub(crate) fn ensure_fixture_in(
     name: &str,
     render: impl FnOnce() -> Vec<u8>,
 ) -> PathBuf {
+    ensure_file_in(dir, name, |tmp| {
+        let mut file = fs::File::create(tmp)
+            .unwrap_or_else(|e| panic!("cannot create {}: {e}", tmp.display()));
+        file.write_all(&render())
+            .and_then(|()| file.sync_all())
+            .unwrap_or_else(|e| panic!("cannot write {}: {e}", tmp.display()));
+    })
+}
+
+/// Return `<dir>/<name>`, creating it with `write` only if it does not exist
+/// yet. `write` receives a unique temporary path in `dir` (whose extension is
+/// not `name`'s) and must create the file there; it is then renamed into
+/// place, so a reader in another test process never observes a half-written
+/// fixture.
+pub(crate) fn ensure_file_in(dir: &Path, name: &str, write: impl FnOnce(&Path)) -> PathBuf {
     let path = dir.join(name);
     if path.is_file() {
         return path;
@@ -35,26 +50,16 @@ pub(crate) fn ensure_fixture_in(
     fs::create_dir_all(dir)
         .unwrap_or_else(|e| panic!("cannot create fixture dir {}: {e}", dir.display()));
 
-    let bytes = render();
-
-    // Write to a unique temporary file, then rename into place, so a reader in
-    // another test process never observes a half-written fixture.
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let tmp = dir.join(format!(
         ".{name}.tmp.{}.{}",
         std::process::id(),
         COUNTER.fetch_add(1, Ordering::Relaxed)
     ));
-    {
-        let mut file = fs::File::create(&tmp)
-            .unwrap_or_else(|e| panic!("cannot create {}: {e}", tmp.display()));
-        file.write_all(&bytes)
-            .and_then(|()| file.sync_all())
-            .unwrap_or_else(|e| panic!("cannot write {}: {e}", tmp.display()));
-    }
+    write(&tmp);
     if let Err(e) = fs::rename(&tmp, &path) {
         // On Windows rename fails if another process won the race; the
-        // content is identical, so keep theirs.
+        // content is equivalent, so keep theirs.
         let _ = fs::remove_file(&tmp);
         if !path.is_file() {
             panic!("cannot move fixture into {}: {e}", path.display());
