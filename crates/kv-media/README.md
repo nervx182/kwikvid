@@ -32,7 +32,7 @@ The `ffmpeg` feature links the system FFmpeg libraries (`libavformat`,
   `sudo apt-get install libavcodec-dev libavformat-dev libavutil-dev pkg-config clang libclang-dev`
 - macOS: `brew install ffmpeg pkgconf`
 - Windows (MSVC): unpack a prebuilt shared FFmpeg (the regression workflow
-  uses BtbN's `ffmpeg-n7.1-latest-win64-gpl-shared-7.1.zip`), set `FFMPEG_DIR`
+  uses the newest BtbN `ffmpeg-n*-latest-win64-gpl-shared-*.zip`), set `FFMPEG_DIR`
   to it, put its `bin` on `PATH` and set `LIBCLANG_PATH` to LLVM's `bin`
   (e.g. `C:\Program Files\LLVM\bin`).
 

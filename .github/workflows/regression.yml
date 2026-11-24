@@ -62,20 +62,33 @@ jobs:
           HOMEBREW_NO_INSTALL_CLEANUP: "1"
           HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: "1"
         run: brew install ffmpeg pkgconf
-      # Windows: BtbN's prebuilt shared win64 build of the FFmpeg 7.1 release
-      # branch (headers, MSVC import libraries, DLLs). ffmpeg-sys-next finds it
-      # through FFMPEG_DIR; the DLLs go on PATH for the test binaries. The
-      # runner image already ships LLVM, so bindgen only needs LIBCLANG_PATH.
+      # Windows: BtbN's prebuilt shared win64 build of the newest FFmpeg
+      # release branch (n7.x/n8.x, never master): headers, MSVC import
+      # libraries, DLLs. BtbN renames assets as branches come and go, so the
+      # asset is picked from the release listing rather than hard-coded.
+      # ffmpeg-sys-next finds it through FFMPEG_DIR; the DLLs go on PATH for
+      # the test binaries. The runner image ships LLVM for bindgen.
       - name: Install FFmpeg (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $name = 'ffmpeg-n7.1-latest-win64-gpl-shared-7.1'
-          $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/$name.zip"
-          Invoke-WebRequest -Uri $url -OutFile "$env:RUNNER_TEMP\ffmpeg.zip"
-          Expand-Archive "$env:RUNNER_TEMP\ffmpeg.zip" -DestinationPath $env:RUNNER_TEMP
-          $dir = Join-Path $env:RUNNER_TEMP $name
+          $rel = Invoke-RestMethod -Uri 'https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/tags/latest' `
+            -Headers @{ Authorization = "Bearer $env:GH_TOKEN"; 'User-Agent' = 'kwikvid-ci' }
+          $asset = $rel.assets |
+            Where-Object { $_.name -match '^ffmpeg-n(\d+)\.(\d+)-latest-win64-gpl-shared-[\d.]+\.zip$' } |
+            Sort-Object { [version]($_.name -replace '^ffmpeg-n(\d+\.\d+)-.*$', '$1') } -Descending |
+            Select-Object -First 1
+          if (-not $asset) {
+            $rel.assets.name
+            throw 'no ffmpeg-n*-latest-win64-gpl-shared asset in BtbN/FFmpeg-Builds latest'
+          }
+          Write-Host "Using $($asset.name)"
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile "$env:RUNNER_TEMP\ffmpeg.zip"
+          Expand-Archive "$env:RUNNER_TEMP\ffmpeg.zip" -DestinationPath "$env:RUNNER_TEMP\ffmpeg"
+          $dir = (Get-ChildItem "$env:RUNNER_TEMP\ffmpeg" -Directory | Select-Object -First 1).FullName
           Get-ChildItem "$dir\lib" | Select-Object -ExpandProperty Name
           & "$dir\bin\ffmpeg.exe" -hide_banner -version | Select-Object -First 1
           "FFMPEG_DIR=$dir" >> $env:GITHUB_ENV
