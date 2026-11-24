@@ -670,7 +670,9 @@ name = "kv-testkit"
 version = "0.0.1"
 dependencies = [
  "criterion",
+ "ffmpeg-next",
  "hound",
+ "kv-testkit",
  "serde",
  "sha2",
  "toml",
