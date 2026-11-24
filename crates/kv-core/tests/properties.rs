@@ -64,7 +64,7 @@ fn random_edl(p: &Project, a: u64, b: u64) -> Edl {
 /// Build a command from raw randomness; may be invalid for the current state.
 fn candidate(p: &Project, (kind, a, b, c): Raw) -> Option<Command> {
     let s = p.section(S)?;
-    Some(match kind % 11 {
+    Some(match kind % 17 {
         0 => Command::AddMedia {
             item: MediaItem {
                 id: p.next_media_id(),
@@ -76,6 +76,7 @@ fn candidate(p: &Project, (kind, a, b, c): Raw) -> Option<Command> {
                     MediaKind::Video
                 },
                 hilights: vec![Micros(0)],
+                clip_audio: c % 2 == 0,
             },
         },
         1 => Command::RemoveMedia {
@@ -129,9 +130,48 @@ fn candidate(p: &Project, (kind, a, b, c): Raw) -> Option<Command> {
             section: S,
             seed: a,
         },
-        _ => Command::ReplaceEdl {
+        10 => Command::ReplaceEdl {
             section: S,
             edl: random_edl(p, a, b),
+        },
+        11 => {
+            let segs = &s.edit.segments;
+            if segs.len() < 2 {
+                return None;
+            }
+            let cut = 1 + (a % (segs.len() as u64 - 1)) as usize;
+            // Within +-2 s of the current cut: often valid, sometimes not.
+            let offset = (b % 4_000_001) as i64 - 2_000_000;
+            Command::MoveCut {
+                section: S,
+                cut,
+                to: Micros(segs[cut].timeline_start.0 + offset),
+            }
+        }
+        12 => Command::SetClipAudio {
+            media_id: pick(&p.media, a)?.id,
+            enabled: b % 2 == 0,
+        },
+        13 => Command::SetMusicVolume {
+            percent: (a % 101) as u8,
+        },
+        14 => Command::SetAspectRatio {
+            aspect: [
+                AspectRatio::Landscape16x9,
+                AspectRatio::Portrait9x16,
+                AspectRatio::Square1x1,
+            ][(a % 3) as usize],
+        },
+        15 => Command::SetStyle {
+            section: S,
+            style: [StylePreset::Cut, StylePreset::Smooth, StylePreset::Action][(a % 3) as usize],
+        },
+        _ => Command::SetTitleCard {
+            section: S,
+            title: (b % 3 != 0).then(|| TitleCard {
+                text: format!("Title {a}"),
+                duration: Micros(500_000 + (c % 4_500_001) as i64),
+            }),
         },
     })
 }
