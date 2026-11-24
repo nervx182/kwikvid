@@ -6,8 +6,9 @@
 //! layer over this crate, so everything here is unit-testable without a
 //! webview. One `Session` per window/project.
 //!
-//! This crate does no file I/O and has no platform code. Later modules add
-//! background jobs, regenerate/re-roll, project save/open, import and export.
+//! This crate has no platform code. File I/O happens only in background
+//! jobs ([`JobRunner`]), through injected backends and `kv-cache`. Later
+//! modules add regenerate/re-roll, project save/open, import and export.
 //!
 //! # Paths
 //!
@@ -28,10 +29,14 @@
 //!  "can_redo":false,"dirty":true,"media_root":"/Users/ana"}
 //! ```
 
+mod analysis;
 mod error;
+mod jobs;
 mod paths;
 
+pub use analysis::{AudioAnalyzer, MusicAnalyzer};
 pub use error::SessionError;
+pub use jobs::*;
 
 use kv_core::{Command, History, Project, ProjectId};
 use serde::{Deserialize, Serialize};
@@ -64,6 +69,8 @@ pub struct Session {
     revision: u64,
     /// The project as last saved (or as created).
     saved: Project,
+    /// Finished music analyses (see [`Session::music_analysis`]).
+    music: analysis::MusicAnalyses,
 }
 
 impl Session {
@@ -76,6 +83,7 @@ impl Session {
             history: History::new(project),
             media_root,
             revision: 0,
+            music: Default::default(),
         }
     }
 
