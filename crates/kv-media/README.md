@@ -13,6 +13,15 @@ primary video stream (codec, coded size, frame rate as a rational, bit depth,
 clockwise display rotation), the primary audio stream (codec, sample rate,
 channels) and the creation time (microseconds since the Unix epoch, UTC).
 
+## Frame and export types
+
+`VideoFrame` is one frame in CPU memory: presentation time (`Micros`), size
+and tightly packed `PixelFormat::Rgba8` bytes (sRGB, straight alpha).
+`ExportSettings` (size, frame rate, `VideoCodec::H264`, bitrate, audio rate
+and channels; serde-serialisable, `validate()` checks it is encodable) is the
+shared vocabulary for decode, encode and the compositor. Both live in
+`frame.rs` and need no FFmpeg.
+
 ## Backends
 
 | Backend | Cargo feature | Notes |
