@@ -68,6 +68,8 @@ which). Signing, notarisation and a DMG are out of scope for now.
 | `ui/` | The frontend: plain HTML, CSS and ES modules, **no bundler, no npm**. Served as-is. |
 | `ui/js/api.js` | The only module that touches `window.__TAURI__`. Exports `apply(cmd)`, `undo()`, `redo()`, `getState()`, `onState(cb)`. Swap it for a mock in UI tests. |
 | `ui/js/main.js` | Keeps the latest snapshot (dropping stale revisions) and re-renders. |
+| `ui-tests/` | Playwright UI tests on a mock backend, plus the tauri-driver smoke (ADR 0011). See AGENTS.md "UI tests". |
+| `tests/ui_fixtures.rs` | Writes / checks `ui-tests/fixtures/*.json` from real snapshots. |
 
 ## IPC contract
 
@@ -85,3 +87,4 @@ which). Signing, notarisation and a DMG are out of scope for now.
 Put each feature in its own `ui/js/<feature>.js` and `ui/css/<feature>.css`
 and touch `ui/index.html` / `ui/js/main.js` with a one-line include or hook
 only, so parallel UI work does not conflict.
+Test it in its own `ui-tests/tests/<feature>.spec.js`.
