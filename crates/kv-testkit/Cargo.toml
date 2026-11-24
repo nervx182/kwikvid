@@ -1,6 +1,6 @@
 [package]
 name = "kv-testkit"
-description = "kwikvid test fixtures: deterministic synthetic media generated on demand"
+description = "kwikvid test fixtures: deterministic synthetic media generated on demand, plus the regression corpus"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,6 +8,17 @@ publish.workspace = true
 
 [dependencies]
 hound.workspace = true
+serde.workspace = true
+sha2 = "0.10"
+toml = { version = "1", default-features = false, features = ["std", "parse", "serde"] }
+
+[dev-dependencies]
+criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }
+
+# Smoke benchmark that proves the regression `benchmarks` job end to end.
+[[bench]]
+name = "fixtures"
+harness = false
 
 [lints]
 workspace = true

@@ -1,5 +1,6 @@
-# Full regression suite. Manually dispatched for now (Actions tab > regression > Run workflow).
-# Stub created with the skeleton; filled in by the "full regression workflow" issue.
+# Full regression suite. Manually dispatched: Actions tab > regression > Run
+# workflow, or `gh workflow run regression.yml --ref <branch> -f suite=all`.
+# See AGENTS.md ("Full regression suite") and docs/decisions/0008-regression-corpus.md.
 name: regression
 
 on:
@@ -10,11 +11,20 @@ on:
         type: choice
         default: all
         options: [all, quality, beats, performance, platforms]
+      file_issue:
+        description: "File a Task issue when a job fails"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Every test, including `#[ignore = "regression"]` ones, on all three OSes.
+  # Corpus tests skip cleanly while the corpus is empty or not fetched.
   platforms:
     if: inputs.suite == 'all' || inputs.suite == 'platforms'
     strategy:
@@ -25,8 +35,134 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
+      # Fetch only the corpus LFS objects, cached by manifest hash so repeat
+      # runs do not spend LFS bandwidth (ADR 0008).
+      - uses: actions/cache@v4
         with:
-          lfs: true
+          path: .git/lfs/objects
+          key: lfs-corpus-${{ hashFiles('fixtures/corpus.toml') }}
+      - name: Fetch regression corpus (Git LFS)
+        shell: bash
+        run: git lfs install --local && git lfs pull --include "fixtures/corpus/**"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --release --locked -- --include-ignored
+
+  # Criterion benchmarks on Apple Silicon (the primary target). Results are
+  # uploaded as an artifact; there is no pass/fail threshold yet.
+  benchmarks:
+    if: inputs.suite == 'all' || inputs.suite == 'performance'
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/cache@v4
+        with:
+          path: .git/lfs/objects
+          key: lfs-corpus-${{ hashFiles('fixtures/corpus.toml') }}
+      - name: Fetch regression corpus (Git LFS)
+        run: git lfs install --local && git lfs pull --include "fixtures/corpus/**"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo bench
+        run: |
+          set -o pipefail
+          cargo bench --workspace --locked --bench '*' 2>&1 | tee bench-output.txt
+      - name: Benchmark summary
+        if: always()
+        run: |
+          { echo '## Benchmarks'; echo '```'; grep -E -B1 'time:' bench-output.txt | grep -v -- '^--$' || true; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      # The summary above already holds the numbers, so a full artifact store
+      # (account-wide quota) must not fail the regression run.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        continue-on-error: true
+        with:
+          retention-days: 30
+          name: criterion-${{ github.run_id }}
+          path: |
+            target/criterion
+            bench-output.txt
+          if-no-files-found: warn
+
+  # Turns a genuine failure (not a cancellation or skip) into a Task issue.
+  report:
+    needs: [platforms, benchmarks]
+    if: always() && inputs.file_issue && contains(needs.*.result, 'failure')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RUN_ID: ${{ github.run_id }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      REF: ${{ github.ref_name }}
+      SHA: ${{ github.sha }}
+      SUITE: ${{ inputs.suite }}
+    steps:
+      - name: File a Task issue for the failing jobs
+        run: |
+          set -euo pipefail
+          jobs=$(gh run view "$RUN_ID" --json jobs \
+            --jq '.jobs[] | select(.conclusion == "failure") | [.databaseId, .name, .url] | @tsv')
+          failed=$(printf '%s\n' "$jobs" | awk -F'\t' '{print "- " $2 ": " $3}')
+          names=$(printf '%s\n' "$jobs" | cut -f2 | paste -sd, - | sed 's/,/, /g')
+          # The run is still in progress (this job is part of it), so read each
+          # failed job's log through the jobs API rather than `gh run view --log`.
+          excerpt=""
+          while IFS=$'\t' read -r id name _; do
+            [ -n "$id" ] || continue
+            log=$(gh api "repos/$GH_REPO/actions/jobs/$id/logs" 2>/dev/null | tail -n 60 | cut -c1-300 || true)
+            excerpt+="===== ${name} ====="$'\n'"${log}"$'\n'
+          done <<< "$jobs"
+          export TITLE="Regression failure: ${names} on ${REF}"
+
+          existing=$(gh issue list --state open --label area:ci --search "in:title \"$TITLE\"" --json number,title \
+            --jq '.[] | select(.title == env.TITLE) | .number' || true)
+          if [ -n "$existing" ]; then
+            echo "An open issue already tracks this failure; not filing a duplicate."
+            exit 0
+          fi
+
+          body=$(cat <<EOF
+          ## Context
+          The full regression workflow (\`.github/workflows/regression.yml\`, suite \`${SUITE}\`) failed on \`${REF}\` at ${SHA}.
+          Run: ${RUN_URL}
+          Filed automatically by the workflow's \`report\` job. See AGENTS.md ("Full regression suite").
+
+          ## Goal
+          The regression run passes again on \`${REF}\`.
+
+          ## Acceptance criteria
+          - [ ] Root cause found and fixed (or the test corrected, never deleted or ignored)
+          - [ ] A re-dispatched regression run is green (link it)
+          - [ ] Merge gate green; no new clippy warnings
+
+          ## Where to look
+          Failing jobs:
+          ${failed}
+
+          ## Test plan
+          Reproduce locally with \`cargo test --workspace --release -- --include-ignored\` (or \`cargo bench\` for the benchmarks job), then re-dispatch the workflow.
+
+          ## Out of scope
+          Unrelated failures: file them separately.
+
+          ## Dependencies
+          Blocked by: none
+
+          ## Notes
+          Log excerpt (last lines of the failed steps):
+
+          ~~~~text
+          ${excerpt}
+          ~~~~
+          EOF
+          )
+          printf '%s\n' "$body" > issue-body.md
+          gh issue create --title "$TITLE" --body-file issue-body.md \
+            --label status:triage --label type:bug --label area:ci
