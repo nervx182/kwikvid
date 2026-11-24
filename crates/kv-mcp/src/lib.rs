@@ -378,6 +378,14 @@ mod tests {
                 creation_time: None,
             })
         }
+
+        fn open_video(
+            &self,
+            path: &Path,
+            _opts: &kv_media::DecodeOptions,
+        ) -> kv_media::Result<Box<dyn kv_media::VideoReader>> {
+            Err(MediaError::NoVideoStream(path.to_owned()))
+        }
     }
 
     fn root() -> PathBuf {
