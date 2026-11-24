@@ -1,0 +1,20 @@
+[package]
+name = "kv-autoedit"
+description = "kwikvid auto-edit: deterministic beat-synced edit from clips, music and constraints"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+kv-audio = { path = "../kv-audio" }
+kv-core = { path = "../kv-core" }
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+insta = "1"
+proptest.workspace = true
+
+[lints]
+workspace = true

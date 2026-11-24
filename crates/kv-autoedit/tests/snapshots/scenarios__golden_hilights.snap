@@ -1,0 +1,14 @@
+---
+source: crates/kv-autoedit/tests/scenarios.rs
+expression: "table(&generate(&inp).unwrap(), &inp.music)"
+---
+  # | media | src_in  | src_out | start   | length | beats | ends on
+----+-------+---------+---------+---------+--------+-------+---------
+  0 |     1 |   2.598 |   4.848 |   0.000 |  2.250 |     5 | downbeat
+  1 |     1 |  14.056 |  16.056 |   2.250 |  2.000 |     4 | downbeat
+  2 |     2 |   0.685 |   2.685 |   4.250 |  2.000 |     4 | downbeat
+  3 |     2 |   5.833 |   7.833 |   6.250 |  2.000 |     4 | downbeat
+  4 |     3 |   8.161 |  10.161 |   8.250 |  2.000 |     4 | downbeat
+  5 |     3 |  15.788 |  17.788 |  10.250 |  2.000 |     4 | downbeat
+  6 |     3 |  26.565 |  29.065 |  12.250 |  2.500 |     5 | beat
+total 14.750
