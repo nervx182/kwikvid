@@ -465,6 +465,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "kv-render"
+version = "0.0.1"
+dependencies = [
+ "kv-core",
+ "kv-media",
+ "proptest",
+ "thiserror",
+]
+
+[[package]]
 name = "kv-testkit"
 version = "0.0.1"
 dependencies = [
