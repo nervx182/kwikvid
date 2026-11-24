@@ -7,11 +7,14 @@
 //!    created: the section exists, its edit is not empty, every media item
 //!    is in the project and probes, the settings are valid, and the music
 //!    bed renders.
-//! 2. For each frame of [`plan`]`(edl, settings.fps)`, fetch every layer's
-//!    source frame with [`VideoReader::frame_at`], [`composite`] them with
-//!    [`Fit::Fill`] and write the result. Readers are opened lazily, one per
-//!    media item, decoded upright at [`source_size_for`] the output, and kept
-//!    in a small LRU ([`MAX_OPEN_READERS`]).
+//! 2. For each frame of [`plan`]`(edl, settings.fps, source rates)`, fetch
+//!    every layer's source frame with [`VideoReader::frame_at`],
+//!    [`composite`] them with [`Fit::Fill`] and write the result (a slow-mo
+//!    in-between frame is a blend of two source frames). Readers are opened
+//!    lazily, one per media item, decoded upright at [`source_size_for`] the
+//!    output, and kept in a small LRU ([`MAX_OPEN_READERS`]). Each reader
+//!    remembers its last [`FRAMES_KEPT`] frames by source time, so the frame
+//!    shared by consecutive slow-mo blends is decoded once.
 //! 3. After each video frame, write the music samples up to that frame's end
 //!    so audio and video stay interleaved for the muxer.
 
@@ -21,8 +24,8 @@ use std::time::{Duration, Instant};
 use kv_audio::{render_music_bed, MusicBedOptions, DEFAULT_FADE_OUT};
 use kv_core::{MediaId, Micros, Project, SectionId};
 use kv_media::{
-    DecodeOptions, Encoder, ExportSettings, MediaBackend, MediaError, VideoFrame, VideoReader,
-    VideoWriter,
+    DecodeOptions, Encoder, ExportSettings, MediaBackend, MediaError, Rational, VideoFrame,
+    VideoReader, VideoWriter,
 };
 
 use crate::{composite, frame_pts, plan, segment_end, source_size_for, CompositeError, Fit};
@@ -32,6 +35,10 @@ use crate::{OutputFrame, PlanError};
 /// closed when another is needed (guess: 4 covers a crossfade plus the next
 /// clips without holding many decoders).
 pub const MAX_OPEN_READERS: usize = 4;
+
+/// Decoded frames kept per open reader, by requested source time: the two
+/// frames of a slow-mo blend, so the next output frame reuses them.
+const FRAMES_KEPT: usize = 2;
 
 /// Fade-out at the end of the music bed: [`kv_audio::DEFAULT_FADE_OUT`]
 /// (1 s, guess).
@@ -138,7 +145,6 @@ pub fn export(
         return Err(RenderError::EmptyEdl(section));
     }
     settings.validate()?;
-    let frame_plan = plan(edl, settings.fps)?;
 
     // Resolve and probe every media item the edit uses, in first-use order.
     let mut sources: Vec<Source> = Vec::new();
@@ -169,6 +175,7 @@ pub fn export(
         let size = source_size_for(settings.width, settings.height, w, h, Fit::Fill);
         sources.push(Source {
             media_id: item.id,
+            fps: video.fps,
             path,
             decode: DecodeOptions {
                 size: (size != (0, 0)).then_some(size),
@@ -176,6 +183,9 @@ pub fn export(
             },
         });
     }
+
+    let source_fps = |id: MediaId| sources.iter().find(|s| s.media_id == id).map(|s| s.fps);
+    let frame_plan = plan(edl, settings.fps, &source_fps)?;
 
     // Audio, rendered up front so a bad music file fails before the output
     // exists.
@@ -245,6 +255,8 @@ fn audio_frames_at(t: Micros, rate: u32) -> usize {
 
 struct Source {
     media_id: MediaId,
+    /// Frame rate from the probe, for snapping and slow-mo blending.
+    fps: Rational,
     path: PathBuf,
     decode: DecodeOptions,
 }
@@ -253,8 +265,16 @@ struct Job<'a> {
     sources: &'a [Source],
     media: &'a dyn MediaBackend,
     /// Open readers, most recently used last.
-    readers: Vec<(MediaId, Box<dyn VideoReader>)>,
+    readers: Vec<OpenReader>,
     settings: &'a ExportSettings,
+}
+
+struct OpenReader {
+    media_id: MediaId,
+    reader: Box<dyn VideoReader>,
+    /// The last [`FRAMES_KEPT`] frames returned, by requested time, most
+    /// recent last.
+    recent: Vec<(Micros, VideoFrame)>,
 }
 
 impl Job<'_> {
@@ -318,34 +338,48 @@ impl Job<'_> {
             path: src.path.clone(),
             source,
         };
-        let reader = self.reader(src).map_err(source_err)?;
-        if let Some(f) = reader.frame_at(t).map_err(source_err)? {
-            return Ok(f);
+        let open = self.reader(src).map_err(source_err)?;
+        if let Some((_, f)) = open.recent.iter().find(|(at, _)| *at == t) {
+            return Ok(f.clone());
         }
-        // `t` is before the first frame (a stream starting late): show the
-        // first frame.
-        reader.seek(Micros(0)).map_err(source_err)?;
-        reader
-            .next_frame()
-            .map_err(source_err)?
-            .ok_or(RenderError::NoFrame { media_id, time: t })
+        let reader = &mut open.reader;
+        let frame = match reader.frame_at(t).map_err(source_err)? {
+            Some(f) => f,
+            None => {
+                // `t` is before the first frame (a stream starting late):
+                // show the first frame.
+                reader.seek(Micros(0)).map_err(source_err)?;
+                reader
+                    .next_frame()
+                    .map_err(source_err)?
+                    .ok_or(RenderError::NoFrame { media_id, time: t })?
+            }
+        };
+        if open.recent.len() >= FRAMES_KEPT {
+            open.recent.remove(0);
+        }
+        open.recent.push((t, frame.clone()));
+        Ok(frame)
     }
 
     /// The open reader for `src`, opening it (and closing the least recently
     /// used one beyond [`MAX_OPEN_READERS`]) if needed.
-    fn reader(&mut self, src: &Source) -> Result<&mut Box<dyn VideoReader>, MediaError> {
-        if let Some(i) = self.readers.iter().position(|(id, _)| *id == src.media_id) {
+    fn reader(&mut self, src: &Source) -> Result<&mut OpenReader, MediaError> {
+        if let Some(i) = self.readers.iter().position(|r| r.media_id == src.media_id) {
             let entry = self.readers.remove(i);
             self.readers.push(entry);
         } else {
             if self.readers.len() >= MAX_OPEN_READERS {
                 self.readers.remove(0);
             }
-            let r = self.media.open_video(&src.path, &src.decode)?;
-            self.readers.push((src.media_id, r));
+            let reader = self.media.open_video(&src.path, &src.decode)?;
+            self.readers.push(OpenReader {
+                media_id: src.media_id,
+                reader,
+                recent: Vec::with_capacity(FRAMES_KEPT),
+            });
         }
-        let last = self.readers.last_mut().expect("just pushed");
-        Ok(&mut last.1)
+        Ok(self.readers.last_mut().expect("just pushed"))
     }
 }
 
@@ -365,6 +399,8 @@ mod tests {
         max_live: Arc<AtomicUsize>,
         opens: Arc<Mutex<Vec<(PathBuf, DecodeOptions)>>>,
         probes: Arc<AtomicUsize>,
+        /// Every `frame_at` time asked of any reader, in order.
+        frame_ats: Arc<Mutex<Vec<Micros>>>,
     }
 
     struct FakeReader {
@@ -372,6 +408,7 @@ mod tests {
         level: u8,
         size: (u32, u32),
         live: Arc<AtomicUsize>,
+        frame_ats: Arc<Mutex<Vec<Micros>>>,
     }
 
     impl Drop for FakeReader {
@@ -429,6 +466,7 @@ mod tests {
                 level: id * 10,
                 size: opts.size.unwrap_or((64, 48)),
                 live: self.live.clone(),
+                frame_ats: self.frame_ats.clone(),
             }))
         }
     }
@@ -444,6 +482,7 @@ mod tests {
             self.frame_at(Micros(0))
         }
         fn frame_at(&mut self, t: Micros) -> kv_media::Result<Option<VideoFrame>> {
+            self.frame_ats.lock().unwrap().push(t);
             let l = self.level;
             Ok(Some(VideoFrame::solid(
                 t,
@@ -632,6 +671,37 @@ mod tests {
         );
         // Each media probed once.
         assert_eq!(media.probes.load(Ordering::SeqCst), 6);
+    }
+
+    #[test]
+    fn slow_motion_decodes_each_source_frame_once() {
+        // 1 s of a 30 fps source at 50 %, output at 10 fps: source times
+        // 0, 50 ms, 100 ms, ...: on frames 0, 3, 6, ... and halfway between
+        // frames 1 and 2, 4 and 5, ...
+        let mut p = project(1, &[1]);
+        p.sections[0].edit.segments[0].speed = Speed(50);
+        p.sections[0].edit.repack();
+        let (media, enc) = (FakeMedia::default(), FakeEncoder::default());
+        let report = run(&p, &media, &enc, &mut Vec::new()).unwrap();
+        assert_eq!(report.frames, 20);
+
+        let fps = Rational::new(30, 1);
+        let source_fps = |_: MediaId| Some(fps);
+        let edl = &p.sections[0].edit;
+        let frame_plan = plan(edl, Rational::new(10, 1), &source_fps).unwrap();
+        let blends = frame_plan.iter().filter(|f| f.layers.len() == 2).count();
+        assert_eq!(blends, 10, "every other frame is a blend");
+        let mut wanted: Vec<Micros> = frame_plan
+            .iter()
+            .flat_map(|f| f.layers.into_iter().map(|l| l.src_time))
+            .collect();
+        wanted.dedup();
+        // The frame shared by consecutive output frames comes from the
+        // cache: the reader sees each source time once, in order.
+        let asked = media.frame_ats.lock().unwrap().clone();
+        assert_eq!(asked, wanted);
+        assert!(asked.windows(2).all(|w| w[0] < w[1]));
+        assert_eq!(asked[..4], [0, 33_333, 66_667, 100_000].map(Micros));
     }
 
     #[test]

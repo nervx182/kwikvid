@@ -275,7 +275,7 @@ impl PreviewEngine {
         sink: Box<dyn FrameSink>,
         config: PreviewConfig,
     ) -> Result<Self, PreviewError> {
-        plan(&Edl::default(), config.fps)?;
+        plan(&Edl::default(), config.fps, &no_source_fps)?;
         let size = compositor.size();
         if size.0 == 0 || size.1 == 0 {
             return Err(PreviewError::InvalidSize {
@@ -338,7 +338,7 @@ impl PreviewEngine {
             .section(section)
             .ok_or(PreviewError::UnknownSection(section))?;
         let edl = sec.edit.clone();
-        let p = plan(&edl, self.config.fps)?;
+        let p = plan(&edl, self.config.fps, &no_source_fps)?;
         let len = p.len();
         let end = Micros(
             edl.segments
@@ -572,7 +572,7 @@ impl PreviewEngine {
     /// order, and forget frames and jobs outside it.
     fn schedule(&self, st: &mut State, pos: Micros) {
         let Some(edit) = &st.edit else { return };
-        let Ok(p) = plan(&edit.edl, self.config.fps) else {
+        let Ok(p) = plan(&edit.edl, self.config.fps, &no_source_fps) else {
             return;
         };
         let Some(first) = index_at(self.config.fps, pos, edit.len) else {
@@ -630,7 +630,7 @@ impl Drop for PreviewEngine {
 /// is still pending. Failed layers are left out (drawn black).
 fn ready_layers(st: &State, fps: Rational, k: u64) -> Option<Vec<(Arc<VideoFrame>, f32)>> {
     let edit = st.edit.as_ref()?;
-    let frame = plan(&edit.edl, fps).ok()?.frame(k)?;
+    let frame = plan(&edit.edl, fps, &no_source_fps).ok()?.frame(k)?;
     let mut out = Vec::with_capacity(frame.layers.len());
     for l in frame.layers {
         match st.cache.get(&(l.media_id, l.src_time)) {
@@ -640,6 +640,13 @@ fn ready_layers(st: &State, fps: Rational, k: u64) -> Option<Vec<(Arc<VideoFrame
         }
     }
     Some(out)
+}
+
+/// Source frame rates for the plan: not known here (sources are probed
+/// lazily by the decode workers), so the preview shows the nearest source
+/// frame without slow-mo blending for now.
+fn no_source_fps(_: MediaId) -> Option<Rational> {
+    None
 }
 
 /// Frames in the prefetch window: `ceil(prefetch * fps)`, at least 1.
