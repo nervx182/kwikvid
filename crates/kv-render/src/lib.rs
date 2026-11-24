@@ -7,10 +7,13 @@
 //!   into output pixels ([`composite`], [`Fit`], [`source_size_for`]).
 //! - The GPU preview compositor (ADR 0007), the same compositing on wgpu
 //!   ([`gpu::GpuCompositor`], feature `gpu`, on by default).
+//! - The live preview engine: playback clock, decode-ahead, seek
+//!   ([`preview::PreviewEngine`]).
 
 mod composite;
 #[cfg(feature = "gpu")]
 pub mod gpu;
+pub mod preview;
 
 pub use composite::{composite, source_size_for, CompositeError, Fit};
 
