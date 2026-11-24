@@ -44,6 +44,24 @@ truncated container), `NoVideoStream`, `Decode` (corrupt data, unsupported
 codec). `FfmpegBackend::open_video_reader` returns the concrete reader, which
 also reports `seek_count()`.
 
+## Filmstrip thumbnails
+
+`filmstrip(reader, duration, count, height)` returns `count` (1..=64)
+thumbnails `height` (16..=360) pixels high; thumbnail `i` is the frame
+displayed at `duration * (i + 0.5) / count`, visited in increasing order (no
+backwards seeks). Width keeps the display aspect ratio after rotation,
+rounded to even (`filmstrip_size(&VideoInfo, height)`); open the reader with
+`DecodeOptions { size: Some(filmstrip_size(..)?), .. }` so the decoder
+scales each frame once. Frames of another size are area-averaged.
+
+Thumbnails are fetched with `VideoReader::frame_near(t, 0.5 s)`: when a cell
+needs a seek, the keyframe the seek lands on is used as is if it is at most
+0.5 s before the cell centre (`FILMSTRIP_KEYFRAME_SNAP`), instead of
+decoding up to a GOP forward. Cells reached by decoding forward (within 2 s)
+are exact. The default `frame_near` is `frame_at`. `encode_jpeg(&frame,
+quality)` writes a baseline JPEG (the `image` crate, `jpeg` feature only; no
+FFmpeg needed) for caching and serving thumbnails.
+
 ## Frame and export types
 
 `VideoFrame` is one frame in CPU memory: presentation time (`Micros`), size
