@@ -31,6 +31,10 @@ The `ffmpeg` feature links the system FFmpeg libraries (`libavformat`,
 - Ubuntu/Debian:
   `sudo apt-get install libavcodec-dev libavformat-dev libavutil-dev pkg-config clang libclang-dev`
 - macOS: `brew install ffmpeg pkgconf`
+- Windows (MSVC): unpack a prebuilt shared FFmpeg (the regression workflow
+  uses BtbN's `ffmpeg-n7.1-latest-win64-gpl-shared-7.1.zip`), set `FFMPEG_DIR`
+  to it, put its `bin` on `PATH` and set `LIBCLANG_PATH` to LLVM's `bin`
+  (e.g. `C:\Program Files\LLVM\bin`).
 
 The tests encode their own 2 s fixture clips with the FFmpeg API, so they need
 an FFmpeg with the `libx264` (or `libopenh264`), `libx265` (10-bit capable)
@@ -40,6 +44,6 @@ and native `aac` encoders. The distribution packages above have them.
 
 Per ADR 0005 (`docs/decisions/0005-dependency-licenses.md`) a shipped kwikvid
 must link an **LGPL, dynamically linked FFmpeg built without
-`--enable-gpl`**. The Ubuntu and Homebrew packages are GPL builds; they are
+`--enable-gpl`**. The Ubuntu, Homebrew and BtbN `gpl` packages are GPL builds; they are
 acceptable for development and CI only. The Rust bindings (`ffmpeg-next`,
 `ffmpeg-sys-next`) are WTFPL, allowed by a scoped exception in `deny.toml`.

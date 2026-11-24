@@ -44,6 +44,43 @@ jobs:
       - name: Fetch regression corpus (Git LFS)
         shell: bash
         run: git lfs install --local && git lfs pull --include "fixtures/corpus/**"
+      # kv-media links the system FFmpeg >= 6.1 (ffmpeg-next) and needs libclang
+      # for bindgen; see crates/kv-media/README.md. All three are GPL builds:
+      # fine for CI, never for shipping (ADR 0005). The kv-media tests encode
+      # their fixtures with libx264, libx265 (10-bit) and aac, so each OS needs
+      # an FFmpeg that has them.
+      - name: Install FFmpeg (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends \
+            libavcodec-dev libavformat-dev libavutil-dev pkg-config clang libclang-dev
+      - name: Install FFmpeg (macOS)
+        if: runner.os == 'macOS'
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+          HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: "1"
+        run: brew install ffmpeg pkgconf
+      # Windows: BtbN's prebuilt shared win64 build of the FFmpeg 7.1 release
+      # branch (headers, MSVC import libraries, DLLs). ffmpeg-sys-next finds it
+      # through FFMPEG_DIR; the DLLs go on PATH for the test binaries. The
+      # runner image already ships LLVM, so bindgen only needs LIBCLANG_PATH.
+      - name: Install FFmpeg (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $name = 'ffmpeg-n7.1-latest-win64-gpl-shared-7.1'
+          $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/$name.zip"
+          Invoke-WebRequest -Uri $url -OutFile "$env:RUNNER_TEMP\ffmpeg.zip"
+          Expand-Archive "$env:RUNNER_TEMP\ffmpeg.zip" -DestinationPath $env:RUNNER_TEMP
+          $dir = Join-Path $env:RUNNER_TEMP $name
+          Get-ChildItem "$dir\lib" | Select-Object -ExpandProperty Name
+          & "$dir\bin\ffmpeg.exe" -hide_banner -version | Select-Object -First 1
+          "FFMPEG_DIR=$dir" >> $env:GITHUB_ENV
+          "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
+          "$dir\bin" >> $env:GITHUB_PATH
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --release --locked -- --include-ignored
@@ -62,6 +99,13 @@ jobs:
           key: lfs-corpus-${{ hashFiles('fixtures/corpus.toml') }}
       - name: Fetch regression corpus (Git LFS)
         run: git lfs install --local && git lfs pull --include "fixtures/corpus/**"
+      # Same as the platforms job: kv-media needs the system FFmpeg.
+      - name: Install FFmpeg
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+          HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: "1"
+        run: brew install ffmpeg pkgconf
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: cargo bench
