@@ -1,0 +1,32 @@
+# Full regression suite. Manually dispatched for now (Actions tab > regression > Run workflow).
+# Stub created with the skeleton; filled in by the "full regression workflow" issue.
+name: regression
+
+on:
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: "Which suites to run"
+        type: choice
+        default: all
+        options: [all, quality, beats, performance, platforms]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  platforms:
+    if: inputs.suite == 'all' || inputs.suite == 'platforms'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --release --locked -- --include-ignored
