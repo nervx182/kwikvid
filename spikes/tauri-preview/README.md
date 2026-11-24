@@ -70,11 +70,14 @@ readable), `RESULT` (the same as JSON), `END code=N`.
 uploads two artifacts:
 
 - `kv-preview-spike-macos-arm64`: zipped `.app`.
-- `preview-bench-macos`: the benchmark log plus two screenshots (may be black
-  if the runner does not grant screen recording).
+- `preview-bench-macos`: the benchmark log plus BMP screenshots taken during
+  `native-wgpu` and `raw-1080`; `ci/has_test_pattern.py` logs whether the test
+  pattern is visible in each (`SCREENSHOT` lines; diagnostic only).
 
-It runs on pull requests that touch this folder or the workflow, and by hand
-from Actions > preview-spike > Run workflow.
+The `SUMMARY` lines also go to the job summary, so the numbers survive when
+artifact storage is full (uploads are allowed to fail). It runs on pull
+requests that touch this folder or the workflow, and by hand from Actions >
+preview-spike > Run workflow. It is not part of the merge gate.
 
 To run the downloaded app on your own Mac:
 
