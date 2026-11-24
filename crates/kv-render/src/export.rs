@@ -479,6 +479,10 @@ mod tests {
             self.created.fetch_add(1, Ordering::SeqCst);
             Ok(Box::new(FakeWriter(self.calls.clone())))
         }
+
+        fn supports(&self, _: kv_media::VideoCodec) -> bool {
+            true
+        }
     }
 
     impl VideoWriter for FakeWriter {
