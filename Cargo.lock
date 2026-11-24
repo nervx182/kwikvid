@@ -987,6 +987,7 @@ dependencies = [
  "kv-core",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tracing",
 ]
