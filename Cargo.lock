@@ -983,9 +983,11 @@ dependencies = [
 name = "kv-session"
 version = "0.0.1"
 dependencies = [
+ "kv-autoedit",
  "kv-core",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tracing",
 ]
