@@ -516,7 +516,9 @@ name = "kv-media"
 version = "0.0.1"
 dependencies = [
  "ffmpeg-next",
+ "hound",
  "kv-core",
+ "kv-testkit",
  "serde",
  "serde_json",
  "thiserror",

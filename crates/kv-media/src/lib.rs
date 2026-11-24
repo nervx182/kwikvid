@@ -2,7 +2,7 @@
 //!
 //! Everything that touches media files sits behind [`MediaBackend`] so the
 //! engine crates stay free of I/O and platform code (see
-//! `docs/architecture.md`). Today the trait only probes files; decode,
+//! `docs/architecture.md`). The trait probes files and decodes video;
 //! thumbnails, proxies and export come later.
 //!
 //! The default backend is [`FfmpegBackend`] (cargo feature `ffmpeg`, on by
@@ -17,9 +17,13 @@ use thiserror::Error;
 
 #[cfg(feature = "ffmpeg")]
 mod ffmpeg;
+#[cfg(feature = "ffmpeg")]
+mod ffmpeg_decode;
 mod frame;
 #[cfg(feature = "ffmpeg")]
 pub use ffmpeg::FfmpegBackend;
+#[cfg(feature = "ffmpeg")]
+pub use ffmpeg_decode::FfmpegVideoReader;
 pub use frame::{ExportSettings, PixelFormat, VideoCodec, VideoFrame};
 
 /// Result alias for this crate.
@@ -48,6 +52,14 @@ pub enum MediaError {
     /// [`ExportSettings::validate`] found settings that cannot be encoded.
     #[error("invalid export settings: {0}")]
     InvalidExportSettings(String),
+
+    /// The file opened but holds no video stream.
+    #[error("{0:?} has no video stream")]
+    NoVideoStream(PathBuf),
+
+    /// Decoding failed (corrupt or truncated data, unsupported codec).
+    #[error("cannot decode {path:?}: {message}")]
+    Decode { path: PathBuf, message: String },
 }
 
 /// A platform media backend. Implementations must be usable from background
@@ -55,6 +67,9 @@ pub enum MediaError {
 pub trait MediaBackend: Send + Sync {
     /// Read container and stream metadata without decoding frames.
     fn probe(&self, path: &Path) -> Result<MediaInfo>;
+
+    /// Open the primary video stream of `path` for decoding to RGBA frames.
+    fn open_video(&self, path: &Path, opts: &DecodeOptions) -> Result<Box<dyn VideoReader>>;
 }
 
 /// Metadata of one media file, as returned by [`MediaBackend::probe`].
@@ -224,6 +239,53 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let doy = (153 * mp + 2) / 5 + d - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     era * 146_097 + doe - 719_468
+}
+
+/// How [`MediaBackend::open_video`] converts decoded frames.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct DecodeOptions {
+    /// Output size in pixels. `None` keeps the display size (the coded size,
+    /// with width and height swapped for a 90/270 rotation when
+    /// `apply_rotation` is set). `Some((w, h))` scales to exactly `w x h`
+    /// with no aspect handling: cropping and fitting are the compositor's job.
+    pub size: Option<(u32, u32)>,
+    /// Apply the display rotation from [`VideoInfo::rotation`] so frames come
+    /// out upright. The rotation happens before scaling to `size`.
+    pub apply_rotation: bool,
+}
+
+impl Default for DecodeOptions {
+    /// Display size, upright.
+    fn default() -> Self {
+        DecodeOptions {
+            size: None,
+            apply_rotation: true,
+        }
+    }
+}
+
+/// Decodes one video stream into [`VideoFrame`]s (RGBA8), in presentation
+/// order. Frame times are relative to the stream start, so the first frame
+/// of a normal file is at or near 0.
+pub trait VideoReader: Send {
+    /// Metadata of the stream being decoded (as [`MediaBackend::probe`]
+    /// reports it: coded size, rotation, ...).
+    fn info(&self) -> &VideoInfo;
+
+    /// Reposition so that [`next_frame`](Self::next_frame) returns the frame
+    /// displayed at `t` (the one with the largest pts `<= t`; the first frame
+    /// when `t` is before it), followed by the later frames.
+    fn seek(&mut self, t: Micros) -> Result<()>;
+
+    /// The next frame in presentation order, `None` after the last one.
+    fn next_frame(&mut self) -> Result<Option<VideoFrame>>;
+
+    /// The frame displayed at `t`: the one with the largest pts `<= t` (so
+    /// the last frame for any `t` past the end). `None` when `t` is before
+    /// the first frame. Decodes forward from the current position when `t`
+    /// is ahead and close; otherwise seeks to the keyframe before `t` and
+    /// decodes forward. Calls with increasing `t` therefore do not re-seek.
+    fn frame_at(&mut self, t: Micros) -> Result<Option<VideoFrame>>;
 }
 
 #[cfg(test)]
