@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 use ffmpeg_next as ff;
 use kv_core::Micros;
 use kv_media::{
-    Encoder, ExportSettings, FfmpegBackend, MediaBackend, MediaError, Rational, VideoFrame,
-    VideoWriter,
+    Encoder, ExportSettings, FfmpegBackend, MediaBackend, MediaError, Rational, VideoCodec,
+    VideoFrame, VideoWriter,
 };
 use kv_testkit::{read_clip_tags, render_tagged_frame, FrameTag};
 
@@ -309,4 +309,117 @@ fn dropping_an_unfinished_writer_does_not_panic() {
     }
     w.write_audio(&sine(0, 5000)).unwrap();
     drop(w);
+}
+
+fn hevc_settings() -> ExportSettings {
+    ExportSettings {
+        video_codec: VideoCodec::Hevc,
+        video_bitrate: ExportSettings::default_bitrate(W, H, VideoCodec::Hevc),
+        ..settings()
+    }
+}
+
+/// Checks `create` refused HEVC as unsupported without touching the file.
+fn assert_hevc_unsupported(result: Result<Box<dyn VideoWriter>, MediaError>, path: &Path) {
+    match result {
+        Err(MediaError::Unsupported(m)) => {
+            assert!(m.starts_with("HEVC export needs VideoToolbox"), "{m}");
+        }
+        Err(e) => panic!("expected Unsupported, got {e}"),
+        Ok(w) => panic!("expected Unsupported, got a {} writer", w.encoder_name()),
+    }
+    assert!(
+        !path.exists(),
+        "an unsupported export must not create the file"
+    );
+}
+
+#[test]
+fn hevc_encodes_with_videotoolbox_or_reports_unsupported() {
+    let path = out_dir().join("tagged_hevc.mp4");
+    let _ = std::fs::remove_file(&path);
+    let b = backend();
+    assert!(b.supports(VideoCodec::H264));
+    if !b.supports(VideoCodec::Hevc) {
+        let why = match b.create(&path, &hevc_settings()) {
+            Err(MediaError::Unsupported(m)) => m,
+            _ => String::new(),
+        };
+        println!("HEVC unsupported on this system, checking the Unsupported path: {why}");
+        assert!(
+            !cfg!(target_os = "macos") || why.contains("hevc_videotoolbox"),
+            "on macOS the reason names the failing encoder: {why}"
+        );
+        assert_hevc_unsupported(b.create(&path, &hevc_settings()), &path);
+        return;
+    }
+    assert_eq!(std::env::consts::OS, "macos", "HEVC is VideoToolbox-only");
+
+    // 1 s of tagged frames, with audio.
+    let frames = FPS as usize;
+    let mut w = b
+        .create(&path, &hevc_settings())
+        .expect("create HEVC writer");
+    assert_eq!(w.encoder_name(), "hevc_videotoolbox");
+    for i in 0..frames {
+        w.write_video(&tagged(i)).unwrap();
+    }
+    w.write_audio(&sine(0, RATE as usize)).unwrap();
+    w.finish().unwrap();
+
+    let info = b.probe(&path).unwrap();
+    let v = info.video.expect("video stream");
+    assert_eq!(v.codec, "hevc");
+    assert_eq!((v.width, v.height), (W, H));
+    assert_eq!(info.audio.expect("audio stream").codec, "aac");
+    let expected: Vec<_> = (0..frames)
+        .map(|i| {
+            Some(FrameTag {
+                clip: CLIP,
+                frame: i as u16,
+            })
+        })
+        .collect();
+    assert_eq!(read_clip_tags(&path), expected);
+
+    // `hvc1` sample entry (QuickTime does not play `hev1`).
+    let bytes = std::fs::read(&path).unwrap();
+    assert!(
+        bytes.windows(4).any(|w| w == b"hvc1"),
+        "no hvc1 sample entry"
+    );
+    assert!(!bytes.windows(4).any(|w| w == b"hev1"), "hev1 sample entry");
+}
+
+#[test]
+#[cfg(not(target_os = "macos"))]
+fn hevc_is_unsupported_off_macos() {
+    let b = backend();
+    assert!(!b.supports(VideoCodec::Hevc));
+    let path = out_dir().join("hevc_unsupported.mp4");
+    let _ = std::fs::remove_file(&path);
+    let result = b.create(&path, &hevc_settings());
+    if let Err(MediaError::Unsupported(m)) = &result {
+        assert_eq!(m, "HEVC export needs VideoToolbox");
+    }
+    assert_hevc_unsupported(result, &path);
+}
+
+#[test]
+fn invalid_4k_plus_settings_are_rejected_for_both_codecs() {
+    let path = out_dir().join("too_big.mp4");
+    let _ = std::fs::remove_file(&path);
+    for video_codec in [VideoCodec::H264, VideoCodec::Hevc] {
+        let s = ExportSettings {
+            width: 4098,
+            height: 2160,
+            video_codec,
+            ..settings()
+        };
+        assert!(matches!(
+            backend().create(&path, &s),
+            Err(MediaError::InvalidExportSettings(_))
+        ));
+    }
+    assert!(!path.exists());
 }
