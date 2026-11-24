@@ -5,8 +5,10 @@ CLI, MCP server) that all drive the engine through the same serialisable
 `Command` API.
 
 ```
- kv-app (Tauri 2)     kv-cli              kv-mcp (rmcp; stdio + local HTTP)
-        \               |                   /
+ kv-app (Tauri 2)       kv-cli            kv-mcp (rmcp; stdio + local HTTP)
+        |                 |                 /
+ kv-session (Tauri-free)  |                /
+        \                 |               /
          +-------- kv-core: Command API, project, EDL, undo --------+
                                   |
    Engine (pure Rust, identical on every OS):
@@ -43,6 +45,7 @@ CLI, MCP server) that all drive the engine through the same serialisable
 | kv-cli | `kwikvid edit --clips ... --music ... --out ...` | clap |
 | kv-mcp | MCP server | rmcp |
 | kv-app | Desktop shell and UI | Tauri 2 |
+| kv-session | Desktop session: project + history, jobs, regenerate, save/open; Tauri-free, so the gate unit-tests the app logic without a webview | kv-core, serde, tracing |
 | kv-cloud | Camera (Open GoPro) and cloud import, Roadmap I | reqwest |
 | kv-testkit | Fixture generation, golden files, comparisons, regression corpus access (ADR 0008) | hound, toml, sha2, criterion (benches) |
 
