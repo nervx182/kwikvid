@@ -44,7 +44,7 @@ CLI, MCP server) that all drive the engine through the same serialisable
 | kv-mcp | MCP server | rmcp |
 | kv-app | Desktop shell and UI | Tauri 2 |
 | kv-cloud | Camera (Open GoPro) and cloud import, Roadmap I | reqwest |
-| kv-testkit | Fixture generation, golden files, comparisons | insta, image |
+| kv-testkit | Fixture generation, golden files, comparisons, regression corpus access (ADR 0008) | hound, toml, sha2, criterion (benches) |
 
 Beat detection is our own implementation: aubio (GPL) and Essentia (AGPL) may
 only be used offline as reference tools in the regression suite.
