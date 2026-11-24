@@ -177,7 +177,9 @@ impl Scaler {
                 w,
                 h,
                 dst.into(),
-                (ffi::SWS_BILINEAR | ffi::SWS_ACCURATE_RND) as _,
+                (ff::software::scaling::Flags::BILINEAR
+                    | ff::software::scaling::Flags::ACCURATE_RND)
+                    .bits() as _,
                 ptr::null_mut(),
                 ptr::null_mut(),
                 ptr::null(),
