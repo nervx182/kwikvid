@@ -30,6 +30,7 @@
 
 mod error;
 mod paths;
+pub mod regen;
 
 pub use error::SessionError;
 
