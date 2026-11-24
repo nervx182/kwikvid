@@ -17,6 +17,7 @@ kv-core = { path = "../kv-core" }
 # `Rational` and `VideoFrame`; no FFmpeg.
 kv-media = { path = "../kv-media", default-features = false }
 thiserror.workspace = true
+tracing = { version = "0.1", default-features = false, features = ["std"] }
 # Pinned: the preview's GPU code is written against this exact API. MIT OR
 # Apache-2.0. Native backends only (no WebGPU/WebGL, no GLES).
 wgpu = { version = "=25.0.2", default-features = false, features = ["wgsl", "metal", "vulkan", "dx12"], optional = true }

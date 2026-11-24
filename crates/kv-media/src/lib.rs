@@ -19,6 +19,7 @@ use thiserror::Error;
 mod ffmpeg;
 #[cfg(feature = "ffmpeg")]
 mod ffmpeg_decode;
+mod filmstrip;
 mod frame;
 #[cfg(feature = "ffmpeg")]
 pub use ffmpeg::FfmpegBackend;
@@ -28,6 +29,7 @@ mod ffmpeg_encode;
 pub use ffmpeg_decode::FfmpegVideoReader;
 #[cfg(feature = "ffmpeg")]
 pub use ffmpeg_encode::REQUIRE_VIDEOTOOLBOX_ENV;
+pub use filmstrip::{encode_jpeg, filmstrip, filmstrip_size, FILMSTRIP_KEYFRAME_SNAP};
 pub use frame::{ExportSettings, PixelFormat, VideoCodec, VideoFrame, MAX_EXPORT_DIMENSION};
 
 /// Result alias for this crate.
@@ -52,6 +54,11 @@ pub enum MediaError {
     /// pixel format.
     #[error("invalid video frame: {0}")]
     InvalidFrame(String),
+
+    /// [`filmstrip`] or [`encode_jpeg`] was called with arguments out of
+    /// range.
+    #[error("invalid thumbnail request: {0}")]
+    InvalidThumbnail(String),
 
     /// [`ExportSettings::validate`] found settings that cannot be encoded.
     #[error("invalid export settings: {0}")]
@@ -330,6 +337,15 @@ pub trait VideoReader: Send {
     /// is ahead and close; otherwise seeks to the keyframe before `t` and
     /// decodes forward. Calls with increasing `t` therefore do not re-seek.
     fn frame_at(&mut self, t: Micros) -> Result<Option<VideoFrame>>;
+
+    /// Like [`frame_at`](Self::frame_at), but when it has to seek it may
+    /// return the keyframe it lands on instead of decoding forward to `t`,
+    /// provided that keyframe is at most `tolerance` before `t`. Cheaper and
+    /// less exact; meant for thumbnails. The default is `frame_at(t)`.
+    fn frame_near(&mut self, t: Micros, tolerance: Micros) -> Result<Option<VideoFrame>> {
+        let _ = tolerance;
+        self.frame_at(t)
+    }
 }
 
 #[cfg(test)]
