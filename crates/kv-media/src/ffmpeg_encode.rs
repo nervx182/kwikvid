@@ -1,8 +1,9 @@
 //! [`Encoder`] implemented with FFmpeg: RGBA frames and interleaved `f32`
-//! PCM in, an MP4 with one H.264 and one AAC stream out.
+//! PCM in, an MP4 with one H.264 or HEVC stream and one AAC stream out.
 //!
 //! H.264 encoder order: `h264_videotoolbox` (macOS only), `libopenh264`,
-//! `libx264` (GPL: development and CI only). See this crate's `README.md`.
+//! `libx264` (GPL: development and CI only). HEVC: `hevc_videotoolbox` only
+//! (macOS); never `libx265`, which is GPL. See this crate's `README.md`.
 
 // `ffmpeg-next` has no safe API for swscale colour details, frame durations,
 // audio channel layouts or audio frame buffers, and its scaling context is not
@@ -13,13 +14,14 @@
 
 use std::path::{Path, PathBuf};
 use std::ptr;
+use std::sync::OnceLock;
 
 use ff::ffi;
 use ffmpeg_next as ff;
 
 use crate::{
-    Encoder, ExportSettings, FfmpegBackend, MediaError, PixelFormat, Result, VideoFrame,
-    VideoWriter,
+    Encoder, ExportSettings, FfmpegBackend, MediaError, PixelFormat, Result, VideoCodec,
+    VideoFrame, VideoWriter,
 };
 
 /// Env var that turns a VideoToolbox fallback into an error.
@@ -29,6 +31,14 @@ pub const REQUIRE_VIDEOTOOLBOX_ENV: &str = "KV_REQUIRE_VIDEOTOOLBOX";
 const AUDIO_BITRATE: usize = 192_000;
 
 const VIDEOTOOLBOX: &str = "h264_videotoolbox";
+const HEVC_VIDEOTOOLBOX: &str = "hevc_videotoolbox";
+
+/// [`MediaError::Unsupported`] message for HEVC without VideoToolbox.
+const HEVC_NEEDS_VIDEOTOOLBOX: &str = "HEVC export needs VideoToolbox";
+
+/// MP4 sample entry for HEVC with parameter sets in the `hvcC` box only.
+/// FFmpeg's default `hev1` does not play in QuickTime.
+const HVC1_TAG: u32 = u32::from_le_bytes(*b"hvc1");
 
 /// H.264 encoders to try, in order, with the pixel format each is fed.
 fn h264_candidates() -> Vec<(&'static str, ff::format::Pixel)> {
@@ -41,6 +51,40 @@ fn h264_candidates() -> Vec<(&'static str, ff::format::Pixel)> {
     c
 }
 
+/// HEVC encoders, with the pixel format each is fed. There is no software
+/// fallback: the only common software HEVC encoder, `libx265`, is GPL.
+fn hevc_candidates() -> Vec<(&'static str, ff::format::Pixel)> {
+    if cfg!(target_os = "macos") {
+        vec![(HEVC_VIDEOTOOLBOX, ff::format::Pixel::NV12)]
+    } else {
+        Vec::new()
+    }
+}
+
+/// Whether HEVC can be encoded here: `Err` holds the reason. Probed once per
+/// process by opening `hevc_videotoolbox` at 1280x720 (a virtualised Mac may
+/// lack the hardware encoder). FFmpeg must be initialised.
+fn hevc_availability() -> std::result::Result<(), String> {
+    static AVAILABLE: OnceLock<std::result::Result<(), String>> = OnceLock::new();
+    AVAILABLE
+        .get_or_init(|| {
+            let Some(&(name, pixel)) = hevc_candidates().first() else {
+                return Err(HEVC_NEEDS_VIDEOTOOLBOX.to_owned());
+            };
+            let probe = ExportSettings {
+                width: 1280,
+                height: 720,
+                video_codec: VideoCodec::Hevc,
+                video_bitrate: ExportSettings::default_bitrate(1280, 720, VideoCodec::Hevc),
+                ..ExportSettings::default()
+            };
+            open_encoder(name, pixel, &probe, true)
+                .map(drop)
+                .map_err(|e| format!("{HEVC_NEEDS_VIDEOTOOLBOX}; {name} is unavailable ({e})"))
+        })
+        .clone()
+}
+
 fn require_videotoolbox_from_env() -> bool {
     std::env::var(REQUIRE_VIDEOTOOLBOX_ENV).is_ok_and(|v| v == "1")
 }
@@ -48,16 +92,55 @@ fn require_videotoolbox_from_env() -> bool {
 impl Encoder for FfmpegBackend {
     fn create(&self, path: &Path, settings: &ExportSettings) -> Result<Box<dyn VideoWriter>> {
         settings.validate()?;
+        if settings.video_codec == VideoCodec::Hevc {
+            hevc_availability().map_err(MediaError::Unsupported)?;
+        }
         let writer = FfmpegWriter::open(path, settings, require_videotoolbox_from_env())?;
         Ok(Box::new(writer))
     }
+
+    fn supports(&self, codec: VideoCodec) -> bool {
+        match codec {
+            VideoCodec::H264 => h264_candidates()
+                .iter()
+                .any(|(name, _)| ff::encoder::find_by_name(name).is_some()),
+            VideoCodec::Hevc => hevc_availability().is_ok(),
+        }
+    }
 }
 
-/// An open H.264 encoder and what it needs to be fed.
+/// An open video encoder and what it needs to be fed.
 struct OpenedVideo {
     name: String,
     encoder: ff::encoder::Video,
     pixel: ff::format::Pixel,
+}
+
+/// Open the encoder for `settings.video_codec`.
+fn open_video(
+    settings: &ExportSettings,
+    global_header: bool,
+    require_videotoolbox: bool,
+) -> std::result::Result<OpenedVideo, String> {
+    match settings.video_codec {
+        VideoCodec::H264 => open_h264(settings, global_header, require_videotoolbox),
+        VideoCodec::Hevc => open_hevc(settings, global_header),
+    }
+}
+
+/// Open the HEVC encoder from [`hevc_candidates`]; no fallback.
+fn open_hevc(
+    settings: &ExportSettings,
+    global_header: bool,
+) -> std::result::Result<OpenedVideo, String> {
+    let &(name, pixel) = hevc_candidates().first().ok_or(HEVC_NEEDS_VIDEOTOOLBOX)?;
+    let encoder =
+        open_encoder(name, pixel, settings, global_header).map_err(|e| format!("{name}: {e}"))?;
+    Ok(OpenedVideo {
+        name: name.to_owned(),
+        encoder,
+        pixel,
+    })
 }
 
 /// Open the first usable H.264 encoder from [`h264_candidates`].
@@ -74,7 +157,7 @@ fn open_h264(
     }
     let mut tried = Vec::new();
     for (name, pixel) in candidates {
-        let result = open_h264_encoder(name, pixel, settings, global_header);
+        let result = open_encoder(name, pixel, settings, global_header);
         match result {
             Ok(encoder) => {
                 if name == "libx264" {
@@ -107,7 +190,7 @@ fn open_h264(
     Err(format!("no usable H.264 encoder ({})", tried.join("; ")))
 }
 
-fn open_h264_encoder(
+fn open_encoder(
     name: &str,
     pixel: ff::format::Pixel,
     settings: &ExportSettings,
@@ -138,7 +221,7 @@ fn open_h264_encoder(
         "libx264" => opts.set("preset", "veryfast"),
         // Hardware only: a software VideoToolbox session is no better than
         // our own software fallback, and hides a missing hardware encoder.
-        VIDEOTOOLBOX => opts.set("allow_sw", "0"),
+        VIDEOTOOLBOX | HEVC_VIDEOTOOLBOX => opts.set("allow_sw", "0"),
         _ => {}
     }
     enc.open_with(opts).map_err(|e| e.to_string())
@@ -374,7 +457,7 @@ impl FfmpegWriter {
             .flags()
             .contains(ff::format::Flags::GLOBAL_HEADER);
 
-        let video = open_h264(settings, global_header, require_videotoolbox).map_err(err)?;
+        let video = open_video(settings, global_header, require_videotoolbox).map_err(err)?;
         let video_stream = {
             let codec = video
                 .encoder
@@ -384,6 +467,11 @@ impl FfmpegWriter {
             ost.set_parameters(&video.encoder);
             ost.set_time_base(video_time_base(settings));
             ost.set_avg_frame_rate(ff::Rational::new(settings.fps.num, settings.fps.den));
+            if settings.video_codec == VideoCodec::Hevc {
+                // SAFETY: `ost` wraps a live stream whose `codecpar` was just
+                // filled by `set_parameters`.
+                unsafe { (*(*ost.as_mut_ptr()).codecpar).codec_tag = HVC1_TAG };
+            }
             ost.index()
         };
         let scaler = Scaler::new(settings.width, settings.height, video.pixel).map_err(err)?;
@@ -556,6 +644,35 @@ mod tests {
             Ok(v) => assert_eq!(v.name, VIDEOTOOLBOX),
             Err(e) => assert!(e.contains(REQUIRE_VIDEOTOOLBOX_ENV), "{e}"),
         }
+    }
+
+    #[test]
+    fn hevc_never_uses_a_gpl_or_software_encoder() {
+        let names: Vec<_> = hevc_candidates().into_iter().map(|(n, _)| n).collect();
+        if cfg!(target_os = "macos") {
+            assert_eq!(names, [HEVC_VIDEOTOOLBOX]);
+        } else {
+            assert!(names.is_empty(), "{names:?}");
+        }
+    }
+
+    #[test]
+    fn hevc_availability_off_macos_is_needs_videotoolbox() {
+        FfmpegBackend::new().unwrap();
+        match hevc_availability() {
+            Ok(()) => assert_eq!(hevc_candidates()[0].0, HEVC_VIDEOTOOLBOX),
+            Err(e) => {
+                assert!(e.starts_with(HEVC_NEEDS_VIDEOTOOLBOX), "{e}");
+                if !cfg!(target_os = "macos") {
+                    assert_eq!(e, HEVC_NEEDS_VIDEOTOOLBOX);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn hvc1_tag_bytes() {
+        assert_eq!(HVC1_TAG.to_le_bytes(), *b"hvc1");
     }
 
     #[test]
