@@ -1,10 +1,15 @@
 [package]
 name = "kv-render"
-description = "kwikvid rendering: frame plan (EDL to per-frame source layers, pure), CPU export compositing and the export pipeline"
+description = "kwikvid rendering: frame plan (EDL to per-frame source layers, pure), CPU export compositing, the export pipeline and the wgpu preview compositor"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+
+[features]
+default = ["gpu"]
+# wgpu compositor for the live preview (`kv_render::gpu`, ADR 0007).
+gpu = ["dep:wgpu", "dep:pollster"]
 
 [dependencies]
 kv-audio = { path = "../kv-audio" }
@@ -12,6 +17,11 @@ kv-core = { path = "../kv-core" }
 # `Rational` and `VideoFrame`; no FFmpeg.
 kv-media = { path = "../kv-media", default-features = false }
 thiserror.workspace = true
+# Pinned: the preview's GPU code is written against this exact API. MIT OR
+# Apache-2.0. Native backends only (no WebGPU/WebGL, no GLES).
+wgpu = { version = "=25.0.2", default-features = false, features = ["wgsl", "metal", "vulkan", "dx12"], optional = true }
+# Blocks on wgpu's async adapter/device requests. MIT OR Apache-2.0.
+pollster = { version = "0.4", optional = true }
 
 [dev-dependencies]
 proptest.workspace = true
