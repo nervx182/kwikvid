@@ -123,6 +123,7 @@ pub fn plan(args: &EditArgs) -> anyhow::Result<Plan> {
             kind: MediaKind::Video,
             hilights,
             clip_audio: false,
+            chapters: Vec::new(),
         };
         project
             .apply(Command::AddMedia { item })

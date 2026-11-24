@@ -95,6 +95,9 @@ impl Project {
     ) -> Result<(), E> {
         for m in &mut self.media {
             m.path = f(&m.path)?;
+            for c in &mut m.chapters {
+                c.path = f(&c.path)?;
+            }
         }
         for music in self.sections.iter_mut().filter_map(|s| s.music.as_mut()) {
             music.path = f(&music.path)?;
@@ -157,6 +160,23 @@ pub struct MediaItem {
     /// Quik, clip audio is muted under the music (guess; reversible).
     #[serde(default)]
     pub clip_audio: bool,
+    /// The chapter files of a chaptered recording (a GoPro recording split
+    /// into `GX01xxxx.MP4`, `GX02xxxx.MP4`, ...), in order. Empty for a
+    /// normal single-file item. When non-empty, [`Self::path`] equals the
+    /// first chapter's path, [`Self::duration`] is the sum of the chapter
+    /// durations, and every time in the item (HiLights, ranges, segments)
+    /// runs continuously across the chapters. Omitted from JSON when empty,
+    /// so single-file items serialise exactly as before.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chapters: Vec<ChapterRef>,
+}
+
+/// One file of a chaptered [`MediaItem`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChapterRef {
+    /// Path relative to the project file, `/`-separated.
+    pub path: String,
+    pub duration: Micros,
 }
 
 /// The music track of a section.

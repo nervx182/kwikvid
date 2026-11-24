@@ -1144,6 +1144,7 @@ dependencies = [
  "kv-core",
  "proptest",
  "thiserror 2.0.21",
+ "tracing",
 ]
 
 [[package]]
