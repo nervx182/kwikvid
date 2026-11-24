@@ -68,9 +68,17 @@ jobs:
         run: |
           set -o pipefail
           cargo bench --workspace --locked --bench '*' 2>&1 | tee bench-output.txt
+      - name: Benchmark summary
+        if: always()
+        run: |
+          { echo '## Benchmarks'; echo '```'; grep -E -B1 'time:' bench-output.txt | grep -v -- '^--$' || true; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      # The summary above already holds the numbers, so a full artifact store
+      # (account-wide quota) must not fail the regression run.
       - uses: actions/upload-artifact@v4
         if: always()
+        continue-on-error: true
         with:
+          retention-days: 30
           name: criterion-${{ github.run_id }}
           path: |
             target/criterion
