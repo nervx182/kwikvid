@@ -1,12 +1,13 @@
 [package]
 name = "kv-render"
-description = "kwikvid rendering: frame plan (EDL to per-frame source layers, pure) and CPU export compositing"
+description = "kwikvid rendering: frame plan (EDL to per-frame source layers, pure), CPU export compositing and the export pipeline"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+kv-audio = { path = "../kv-audio" }
 kv-core = { path = "../kv-core" }
 # `Rational` and `VideoFrame`; no FFmpeg.
 kv-media = { path = "../kv-media", default-features = false }
@@ -14,6 +15,11 @@ thiserror.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+# The export integration test runs the real FFmpeg backend on tagged clips.
+kv-media = { path = "../kv-media" }
+kv-testkit = { path = "../kv-testkit", features = ["video"] }
+# Same version and features as kv-media; reads the exported stream lengths.
+ffmpeg-next = { version = "9.1", default-features = false, features = ["codec", "format", "software-scaling"] }
 
 [lints]
 workspace = true

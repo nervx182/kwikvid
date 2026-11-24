@@ -5,10 +5,13 @@
 //!   their blend weights ([`plan`], [`FramePlan`]).
 //! - The CPU export compositor (ADR 0009): turns a frame's decoded layers
 //!   into output pixels ([`composite`], [`Fit`], [`source_size_for`]).
+//! - The export pipeline: a project section to an MP4 ([`export()`]).
 
 mod composite;
+mod export;
 
 pub use composite::{composite, source_size_for, CompositeError, Fit};
+pub use export::{export, ExportReport, Progress, RenderError, MAX_OPEN_READERS, MUSIC_FADE_OUT};
 
 use kv_core::{Edl, MediaId, Micros, Segment, Speed, Transition};
 use kv_media::Rational;
