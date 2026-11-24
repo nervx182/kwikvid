@@ -196,6 +196,7 @@ impl Project {
                 }
                 check_path(&item.path)?;
                 check_duration(item.duration)?;
+                check_chapters(&item)?;
                 if let Some(&at) = item
                     .hilights
                     .iter()
@@ -497,6 +498,33 @@ fn check_path(path: &str) -> Result<(), CoreError> {
         || (b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':');
     if path.is_empty() || absolute {
         return Err(CoreError::InvalidPath(path.to_owned()));
+    }
+    Ok(())
+}
+
+/// A chaptered item's chapters must have valid paths and durations, the
+/// item's path must be the first chapter's and its duration their sum.
+fn check_chapters(item: &MediaItem) -> Result<(), CoreError> {
+    let Some(first) = item.chapters.first() else {
+        return Ok(());
+    };
+    let mut sum: i64 = 0;
+    for c in &item.chapters {
+        check_path(&c.path)?;
+        check_duration(c.duration)?;
+        sum = sum.saturating_add(c.duration.0);
+    }
+    if item.path != first.path {
+        return Err(CoreError::ChapterPathMismatch {
+            path: item.path.clone(),
+            first: first.path.clone(),
+        });
+    }
+    if item.duration.0 != sum {
+        return Err(CoreError::ChapterDurationMismatch {
+            duration: item.duration,
+            sum: Micros(sum),
+        });
     }
     Ok(())
 }
