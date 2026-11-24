@@ -1,0 +1,19 @@
+[package]
+name = "kv-render"
+description = "kwikvid rendering: frame plan (EDL to per-frame source layers, pure) and later compositing"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+kv-core = { path = "../kv-core" }
+# Only for `Rational`; no FFmpeg.
+kv-media = { path = "../kv-media", default-features = false }
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true
