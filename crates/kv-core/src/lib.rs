@@ -1,8 +1,28 @@
 //! kwikvid core: project model, edit decision list (EDL) and the `Command` API.
 //!
-//! This crate is a placeholder created with the repository skeleton. The real
-//! types arrive with the "kv-core: EDL and Command types" issue. Keep this crate
-//! free of I/O and platform code (see `docs/architecture.md`).
+//! - [`model`] holds [`Project`], the media library, sections and the
+//!   sectioned [`Edl`].
+//! - [`command`] holds [`Command`] (every user-facing action), [`Event`] and
+//!   [`Project::apply`], which validates and applies a command.
+//! - [`history`] holds [`History`], undo/redo over applied commands.
+//! - [`error`] holds [`CoreError`].
+//!
+//! Everything serialises to JSON; a project file has a top-level
+//! `"version": 1`. Keep this crate free of I/O and platform code (see
+//! `docs/architecture.md`).
+
+pub mod command;
+pub mod error;
+pub mod history;
+pub mod model;
+
+pub use command::{Command, Event};
+pub use error::CoreError;
+pub use history::History;
+pub use model::{
+    AspectRatio, Edl, FormatVersion, MediaId, MediaItem, MediaKind, MusicRef, Project, ProjectId,
+    ProjectSettings, RangeRef, Section, SectionId, Segment, Speed, TargetLength, Transition,
+};
 
 use serde::{Deserialize, Serialize};
 
