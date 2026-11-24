@@ -8,12 +8,15 @@
 //! - [`gpmf_streams`]: a summary of the GPMF telemetry track (the `gpmd`
 //!   sample entry): one [`StreamInfo`] per sensor FourCC with its total
 //!   sample count and average rate.
+//! - [`group_chapters`]: groups chaptered recordings (`GX01xxxx.MP4`,
+//!   `GX02xxxx.MP4`, ...) by file name, without touching the file system.
 //!
 //! Only the `moov` box and the GPMF samples are read, never the video data,
 //! so the functions are cheap on multi-gigabyte files. The approach and the
 //! open questions that need real camera footage are recorded in
 //! `docs/decisions/0006-gopro-metadata.md`.
 
+mod chapters;
 mod error;
 mod gpmf;
 mod mp4;
@@ -24,6 +27,7 @@ use std::path::Path;
 
 use kv_core::Micros;
 
+pub use chapters::{group_chapters, ChapterGroup, PREFIX_GH, PREFIX_GOPR, PREFIX_GX};
 pub use error::{GoproError, Result};
 pub use gpmf::{FourCc, StreamInfo};
 
