@@ -374,6 +374,19 @@ impl FfmpegVideoReader {
         Ok(())
     }
 
+    /// Whether reaching the frame displayed at `t` needs a seek: it does
+    /// unless that frame can be reached by decoding forward (nothing before
+    /// `t` has been dropped) and is at most [`FORWARD_WINDOW`] ahead.
+    fn needs_seek(&mut self, t: Micros) -> Result<bool> {
+        let next = self.peek_pts()?;
+        let reachable = match &self.current {
+            Some(cur) => cur.pts <= t,
+            None => self.at_start || next.is_some_and(|n| n <= t),
+        };
+        let near = next.is_none_or(|n| t.0.saturating_sub(n.0) <= FORWARD_WINDOW.0);
+        Ok(!(reachable && near))
+    }
+
     /// Consume frames with pts `<= t` into `current`.
     fn advance_to(&mut self, t: Micros) -> Result<()> {
         while let Some(pts) = self.peek_pts()? {
@@ -418,16 +431,25 @@ impl VideoReader for FfmpegVideoReader {
                 return Ok(Some(cur.clone()));
             }
         }
-        // The frame displayed at `t` is reachable by decoding forward when
-        // nothing before `t` has been dropped...
-        let reachable = match &self.current {
-            Some(cur) => cur.pts <= t,
-            None => self.at_start || next.is_some_and(|n| n <= t),
-        };
-        // ...and it is not too far ahead.
-        let near = next.is_none_or(|n| t.0.saturating_sub(n.0) <= FORWARD_WINDOW.0);
-        if !(reachable && near) {
+        if self.needs_seek(t)? {
             self.seek_to(t)?;
+        }
+        self.advance_to(t)?;
+        Ok(self.current.clone())
+    }
+
+    fn frame_near(&mut self, t: Micros, tolerance: Micros) -> Result<Option<VideoFrame>> {
+        if !self.needs_seek(t)? {
+            return self.frame_at(t);
+        }
+        self.seek_to(t)?;
+        // `seek_to` leaves the frame it landed on (the keyframe) in front.
+        if let Some(key) = self.queue.front() {
+            if key.pts <= t && t.0 - key.pts.0 <= tolerance.0 {
+                self.current = self.queue.pop_front();
+                self.at_start = false;
+                return Ok(self.current.clone());
+            }
         }
         self.advance_to(t)?;
         Ok(self.current.clone())
