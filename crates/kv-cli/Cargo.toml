@@ -18,13 +18,18 @@ kv-autoedit = { path = "../kv-autoedit" }
 kv-core = { path = "../kv-core" }
 kv-gopro = { path = "../kv-gopro" }
 kv-media = { path = "../kv-media" }
+kv-render = { path = "../kv-render" }
 serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter"] }
 
 [dev-dependencies]
 assert_cmd = "2"
 insta = "1"
-kv-testkit = { path = "../kv-testkit" }
+# `video`: tagged MP4 clips for the end-to-end render test.
+kv-testkit = { path = "../kv-testkit", features = ["video"] }
 tempfile = "3"
 
 [lints]

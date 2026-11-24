@@ -2460,10 +2460,14 @@ dependencies = [
  "kv-core",
  "kv-gopro",
  "kv-media",
+ "kv-render",
  "kv-testkit",
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror 2.0.21",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
