@@ -81,6 +81,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "kv-gopro"
+version = "0.0.1"
+dependencies = [
+ "kv-core",
+ "proptest",
+ "thiserror",
+]
+
+[[package]]
 name = "kv-testkit"
 version = "0.0.1"
 dependencies = [
