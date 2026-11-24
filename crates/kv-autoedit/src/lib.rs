@@ -26,18 +26,21 @@
 //! 5. **Order.** Segments play in chronological order: media in input order,
 //!    then by source time.
 //!
-//! Every segment is a plain cut at normal speed; transitions and speed ramps
-//! are out of scope for v1.
+//! Every segment is a plain cut at normal speed. [`apply_style`] then turns
+//! that edit into a styled one (crossfades or slow motion) without moving a
+//! cut; see [`style`].
 
 mod candidates;
 mod grid;
 mod layout;
 mod rng;
+pub mod style;
 
 use kv_core::{Edl, MediaId, Micros, RangeRef};
 use serde::{Deserialize, Serialize};
 
 pub use kv_audio::MusicAnalysis;
+pub use style::apply_style;
 
 use candidates::State;
 use layout::{Item, Outcome};
