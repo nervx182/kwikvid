@@ -24,6 +24,14 @@ allow = [
   "CC0-1.0",
   "BSL-1.0",
 ]
+# The only maintained safe FFmpeg bindings (ffmpeg-next and its -sys crate)
+# are WTFPL, a public-domain-style permissive licence. Scoped to these two
+# crates rather than allowed globally. The FFmpeg libraries they link are a
+# separate matter: shipping builds must use an LGPL build (ADR 0005).
+exceptions = [
+  { crate = "ffmpeg-next", allow = ["WTFPL"] },
+  { crate = "ffmpeg-sys-next", allow = ["WTFPL"] },
+]
 # Our own crates are unpublished and unlicensed for now.
 [licenses.private]
 ignore = true
