@@ -7,8 +7,8 @@
 
 use crate::error::CoreError;
 use crate::model::{
-    Edl, MediaId, MediaItem, MusicRef, Project, RangeRef, Section, SectionId, TargetLength,
-    Transition,
+    AspectRatio, Edl, MediaId, MediaItem, MusicRef, Project, RangeRef, Section, SectionId, Segment,
+    Speed, StylePreset, TargetLength, TitleCard, Transition,
 };
 use crate::Micros;
 use serde::{Deserialize, Serialize};
@@ -73,6 +73,41 @@ pub enum Command {
         section: SectionId,
         edl: Edl,
     },
+    /// Move the cut between segments `cut - 1` and `cut` (`1 <= cut < len`)
+    /// to timeline time `to`: the previous segment's `src_out` and the next
+    /// segment's `src_in` both shift by the timeline delta scaled by each
+    /// segment's speed, then the timeline is repacked. Rejected if either
+    /// segment would become shorter than [`Segment::MIN_LEN`] or extend
+    /// outside its media. The core knows nothing about beats: front ends
+    /// compute `to` from the beat grid ("nudge by one beat").
+    MoveCut {
+        section: SectionId,
+        cut: usize,
+        to: Micros,
+    },
+    /// Turn a clip's own audio on or off in the edit.
+    SetClipAudio {
+        media_id: MediaId,
+        enabled: bool,
+    },
+    /// Set the music volume, 0..=100 percent.
+    SetMusicVolume {
+        percent: u8,
+    },
+    /// Set the output aspect ratio.
+    SetAspectRatio {
+        aspect: AspectRatio,
+    },
+    /// Set a section's style preset.
+    SetStyle {
+        section: SectionId,
+        style: StylePreset,
+    },
+    /// Set or clear a section's title card.
+    SetTitleCard {
+        section: SectionId,
+        title: Option<TitleCard>,
+    },
 }
 
 /// What an applied [`Command`] changed.
@@ -122,6 +157,32 @@ pub enum Event {
     EdlReplaced {
         section: SectionId,
         segments: usize,
+    },
+    CutMoved {
+        section: SectionId,
+        cut: usize,
+        /// Where the cut actually landed after scaling by speed and
+        /// repacking (equal to the requested time at normal speed).
+        at: Micros,
+    },
+    ClipAudioSet {
+        media_id: MediaId,
+        enabled: bool,
+    },
+    MusicVolumeSet {
+        percent: u8,
+    },
+    AspectRatioSet {
+        aspect: AspectRatio,
+    },
+    StyleSet {
+        section: SectionId,
+        style: StylePreset,
+    },
+    TitleCardSet {
+        section: SectionId,
+        /// False when the title card was cleared.
+        present: bool,
     },
 }
 
@@ -264,6 +325,49 @@ impl Project {
                 self.section_mut(section)?.edit = edl;
                 Ok(Event::EdlReplaced { section, segments })
             }
+            Command::MoveCut { section, cut, to } => {
+                let edit = &self
+                    .section(section)
+                    .ok_or(CoreError::UnknownSection(section))?
+                    .edit;
+                let mut edl = move_cut(edit, cut, to, |id| self.duration_of(id))?;
+                edl.repack();
+                self.check_edl(&edl)?;
+                let at = edl.segments[cut].timeline_start;
+                self.section_mut(section)?.edit = edl;
+                Ok(Event::CutMoved { section, cut, at })
+            }
+            Command::SetClipAudio { media_id, enabled } => {
+                self.media
+                    .iter_mut()
+                    .find(|m| m.id == media_id)
+                    .ok_or(CoreError::UnknownMedia(media_id))?
+                    .clip_audio = enabled;
+                Ok(Event::ClipAudioSet { media_id, enabled })
+            }
+            Command::SetMusicVolume { percent } => {
+                if percent > 100 {
+                    return Err(CoreError::InvalidMusicVolume(percent));
+                }
+                self.settings.music_volume_percent = percent;
+                Ok(Event::MusicVolumeSet { percent })
+            }
+            Command::SetAspectRatio { aspect } => {
+                self.settings.aspect_ratio = aspect;
+                Ok(Event::AspectRatioSet { aspect })
+            }
+            Command::SetStyle { section, style } => {
+                self.section_mut(section)?.style = style;
+                Ok(Event::StyleSet { section, style })
+            }
+            Command::SetTitleCard { section, title } => {
+                if let Some(t) = &title {
+                    check_title(t)?;
+                }
+                let present = title.is_some();
+                self.section_mut(section)?.title = title;
+                Ok(Event::TitleCardSet { section, present })
+            }
         }
     }
 
@@ -316,6 +420,74 @@ impl Project {
         }
         Ok(())
     }
+}
+
+/// The EDL with cut `cut` moved to `to`, not yet repacked.
+fn move_cut(
+    edl: &Edl,
+    cut: usize,
+    to: Micros,
+    duration_of: impl Fn(MediaId) -> Result<Micros, CoreError>,
+) -> Result<Edl, CoreError> {
+    let len = edl.segments.len();
+    if cut == 0 || cut >= len {
+        return Err(CoreError::CutIndexOutOfRange { cut, len });
+    }
+    let delta = i128::from(to.0) - i128::from(edl.segments[cut].timeline_start.0);
+    let mut edl = edl.clone();
+    for (index, sign) in [(cut - 1, 1), (cut, -1)] {
+        let seg = &mut edl.segments[index];
+        let src_delta = scale_by_speed(delta, seg.speed);
+        let outside = CoreError::CutOutsideMedia { cut, to, index };
+        let shifted = |t: Micros| {
+            i64::try_from(i128::from(t.0) + src_delta)
+                .map(Micros)
+                .map_err(|_| outside.clone())
+        };
+        // The previous segment's end and the next segment's start both
+        // follow the cut.
+        if sign > 0 {
+            seg.src_out = shifted(seg.src_out)?;
+        } else {
+            seg.src_in = shifted(seg.src_in)?;
+        }
+        if seg.src_in.0 < 0 || seg.src_out > duration_of(seg.media_id)? {
+            return Err(outside);
+        }
+        if seg.src_out <= seg.src_in || seg.timeline_len() < Segment::MIN_LEN {
+            return Err(CoreError::CutTooShort {
+                cut,
+                to,
+                index,
+                min: Segment::MIN_LEN,
+            });
+        }
+    }
+    Ok(edl)
+}
+
+/// A timeline duration converted to source time at `speed` (rounded toward
+/// zero).
+fn scale_by_speed(timeline: i128, speed: Speed) -> i128 {
+    timeline * i128::from(speed.0.max(1)) / i128::from(Speed::NORMAL.0)
+}
+
+fn check_title(t: &TitleCard) -> Result<(), CoreError> {
+    let chars = t.text.chars().count();
+    if chars == 0 || chars > TitleCard::MAX_CHARS || t.text.trim().is_empty() {
+        return Err(CoreError::InvalidTitleText {
+            chars,
+            max: TitleCard::MAX_CHARS,
+        });
+    }
+    if t.duration < TitleCard::MIN_DURATION || t.duration > TitleCard::MAX_DURATION {
+        return Err(CoreError::InvalidTitleDuration {
+            duration: t.duration,
+            min: TitleCard::MIN_DURATION,
+            max: TitleCard::MAX_DURATION,
+        });
+    }
+    Ok(())
 }
 
 fn check_path(path: &str) -> Result<(), CoreError> {

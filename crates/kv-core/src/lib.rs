@@ -21,7 +21,8 @@ pub use error::CoreError;
 pub use history::History;
 pub use model::{
     AspectRatio, Edl, FormatVersion, MediaId, MediaItem, MediaKind, MusicRef, Project, ProjectId,
-    ProjectSettings, RangeRef, Section, SectionId, Segment, Speed, TargetLength, Transition,
+    ProjectSettings, RangeRef, Section, SectionId, Segment, Speed, StylePreset, TargetLength,
+    TitleCard, Transition,
 };
 
 use serde::{Deserialize, Serialize};
