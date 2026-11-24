@@ -97,6 +97,11 @@ footage goes into the regression suite later (ADR 0004).
 5. Does `STRM` ever hold more than one data key, or data larger than 64 KiB
    per entry (gpmf-parser has an extended-size path we do not handle)?
 6. Do `.LRV` proxies carry the same HiLights and telemetry as the MP4?
+7. Chapter grouping (`kv_gopro::group_chapters`) is purely filename-based
+   (`GOPRxxxx`/`GPzzxxxx`, `GHzzxxxx`, `GXzzxxxx`), taken from GoPro's public
+   naming article and unverified on real cards (guess). Confirm the scheme per
+   camera generation, and whether `udta` metadata or creation times are needed
+   to tell recordings apart once numbers wrap.
 
 ## Consequences
 
