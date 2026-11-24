@@ -1,0 +1,147 @@
+# Tauri preview spike (issue #5). Not part of the merge gate: it only runs when
+# the spike or this file changes, or by hand (Actions > preview-spike > Run workflow).
+# Builds the unsigned .app (ADR 0004), runs the automated benchmark on the
+# runner's GUI session and uploads the .app and the measurement log.
+name: preview-spike
+
+on:
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: "Seconds per preview path in the benchmark"
+        default: "10"
+  pull_request:
+    paths:
+      - "spikes/tauri-preview/**"
+      - ".github/workflows/preview-spike.yml"
+
+concurrency:
+  group: preview-spike-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  BENCH_SECONDS: ${{ inputs.seconds || '10' }}
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: spikes/tauri-preview
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: spikes/tauri-preview
+      - name: Unit tests
+        run: cargo test --release --locked
+      - name: Build unsigned .app
+        run: npx --yes @tauri-apps/cli@2.12.6 build --bundles app -- --locked
+      - name: Locate bundle
+        id: app
+        run: |
+          APP=$(find target/release/bundle/macos -maxdepth 1 -name '*.app' | head -1)
+          test -n "$APP"
+          echo "app=$APP" >> "$GITHUB_OUTPUT"
+          echo "bin=$(find "$APP/Contents/MacOS" -type f -perm -u+x | head -1)" >> "$GITHUB_OUTPUT"
+          system_profiler SPHardwareDataType SPDisplaysDataType | tee "$RUNNER_TEMP/machine.txt" || true
+      - name: Run benchmark (GUI session)
+        timeout-minutes: 6
+        run: |
+          LOG="$RUNNER_TEMP/preview-bench-macos.log"
+          cat "$RUNNER_TEMP/machine.txt" > "$LOG" || true
+          # Screenshot each path a few seconds in, to check the native layer
+          # really shows through the transparent webview.
+          shoot() {
+            until grep -q "RUN $1 " "$LOG" 2>/dev/null; do sleep 0.5; done
+            sleep 4
+            screencapture -x -t bmp "$RUNNER_TEMP/screenshot-$1.bmp" || true
+          }
+          for p in native-wgpu raw-1080; do shoot "$p" & done
+          "${{ steps.app.outputs.bin }}" --bench --seconds "$BENCH_SECONDS" --log "$LOG" || echo "app exited with code $?"
+          kill $(jobs -p) 2>/dev/null || true
+          for p in native-wgpu raw-1080; do
+            python3 ci/has_test_pattern.py "$RUNNER_TEMP/screenshot-$p.bmp" "$p" | tee -a "$LOG"
+          done
+          grep -E '^(SUMMARY|SKIP|ERROR|END)' "$LOG" || true
+          grep -q '^END code=0' "$LOG"
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "### Preview spike benchmark (macos-latest, Apple Silicon runner, virtualised)"
+            echo '```'
+            grep -E '^(START|WINDOW|SUMMARY|SKIP|ERROR|END|SCREENSHOT)|ENV |Chip|Memory|Resolution' "$RUNNER_TEMP/preview-bench-macos.log" || echo "no log"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Zip .app (keeps symlinks and permissions)
+        if: always()
+        run: ditto -c -k --keepParent "${{ steps.app.outputs.app }}" "$RUNNER_TEMP/kv-preview-spike-macos-arm64.zip"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        # Artifact storage is an account-wide quota; the numbers are also in
+        # the job summary, so a full quota must not fail the spike.
+        continue-on-error: true
+        with:
+          retention-days: 14
+          name: kv-preview-spike-macos-arm64
+          path: ${{ runner.temp }}/kv-preview-spike-macos-arm64.zip
+          if-no-files-found: warn
+      - uses: actions/upload-artifact@v4
+        if: always()
+        # Artifact storage is an account-wide quota; the numbers are also in
+        # the job summary, so a full quota must not fail the spike.
+        continue-on-error: true
+        with:
+          retention-days: 14
+          name: preview-bench-macos
+          path: |
+            ${{ runner.temp }}/preview-bench-macos.log
+            ${{ runner.temp }}/screenshot-*.bmp
+          if-no-files-found: warn
+
+  # Optional Linux numbers under a virtual X display (software GL). Indicative only.
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: spikes/tauri-preview
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: spikes/tauri-preview
+      - name: System libraries
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev xvfb
+      - run: cargo build --release --locked
+      - name: Run benchmark (xvfb)
+        timeout-minutes: 6
+        run: |
+          LOG="$RUNNER_TEMP/preview-bench-linux.log"
+          xvfb-run -a -s "-screen 0 1920x1080x24" ./target/release/kv-preview-spike --bench --seconds "$BENCH_SECONDS" --log "$LOG" || echo "app exited with code $?"
+          grep -E '^(SUMMARY|SKIP|ERROR|END)' "$LOG" || true
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "### Preview spike benchmark (ubuntu-latest, Xvfb, software GL)"
+            echo '```'
+            grep -E '^(START|WINDOW|SUMMARY|SKIP|ERROR|END)|ENV ' "$RUNNER_TEMP/preview-bench-linux.log" || echo "no log"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        # Artifact storage is an account-wide quota; the numbers are also in
+        # the job summary, so a full quota must not fail the spike.
+        continue-on-error: true
+        with:
+          retention-days: 14
+          name: preview-bench-linux
+          path: ${{ runner.temp }}/preview-bench-linux.log
+          if-no-files-found: warn

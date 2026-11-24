@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>kwikvid preview spike</title>
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; font: 13px/1.4 -apple-system, system-ui, sans-serif; }
+      body { background: #111; color: #eee; }
+      /* Path A: the page goes transparent so the native layer underneath shows. */
+      body.native { background: transparent; }
+      body.native #view { visibility: hidden; }
+      #view { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+      #hud { position: fixed; left: 8px; right: 8px; bottom: 8px; padding: 8px 10px; border-radius: 8px;
+             background: rgba(0, 0, 0, 0.72); display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+      #hud button { font: inherit; padding: 3px 8px; border-radius: 5px; border: 1px solid #555; background: #222; color: #eee; cursor: pointer; }
+      #hud button.active { background: #2a6; border-color: #2a6; }
+      #live { margin-left: auto; font-variant-numeric: tabular-nums; white-space: pre; }
+    </style>
+  </head>
+  <body>
+    <canvas id="view"></canvas>
+    <div id="hud">
+      <span>Path:</span>
+      <span id="buttons"></span>
+      <button id="all">Run all</button>
+      <span id="live">idle</span>
+    </div>
+    <script src="main.js"></script>
+  </body>
+</html>

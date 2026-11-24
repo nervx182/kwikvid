@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
 members = ["crates/*"]
+# Spikes are throwaway experiments with their own lockfile; never built by the gate.
+exclude = ["spikes"]
 
 [workspace.package]
 version = "0.0.1"
