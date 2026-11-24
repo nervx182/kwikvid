@@ -30,7 +30,7 @@ pub use ffmpeg_decode::FfmpegVideoReader;
 #[cfg(feature = "ffmpeg")]
 pub use ffmpeg_encode::REQUIRE_VIDEOTOOLBOX_ENV;
 pub use filmstrip::{encode_jpeg, filmstrip, filmstrip_size, FILMSTRIP_KEYFRAME_SNAP};
-pub use frame::{ExportSettings, PixelFormat, VideoCodec, VideoFrame};
+pub use frame::{ExportSettings, PixelFormat, VideoCodec, VideoFrame, MAX_EXPORT_DIMENSION};
 
 /// Result alias for this crate.
 pub type Result<T, E = MediaError> = std::result::Result<T, E>;
@@ -68,6 +68,11 @@ pub enum MediaError {
     /// encoder could be opened, or a frame or sample buffer was rejected.
     #[error("cannot encode {path:?}: {message}")]
     Encode { path: PathBuf, message: String },
+
+    /// The requested operation needs an encoder or feature this system does
+    /// not have, e.g. HEVC export without VideoToolbox.
+    #[error("unsupported: {0}")]
+    Unsupported(String),
 
     /// The file opened but holds no video stream.
     #[error("{0:?} has no video stream")]
@@ -260,9 +265,15 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 /// Creates [`VideoWriter`]s: the export side of a platform backend.
 pub trait Encoder: Send + Sync {
     /// Start writing an MP4 at `path`. Calls [`ExportSettings::validate`]
-    /// first. Fails with [`MediaError::Encode`] when the file cannot be
-    /// created or no encoder is usable.
+    /// first. Fails with [`MediaError::Unsupported`], before touching the
+    /// file, when [`supports`](Self::supports) is false for the codec, and
+    /// with [`MediaError::Encode`] when the file cannot be created or no
+    /// encoder is usable.
     fn create(&self, path: &Path, settings: &ExportSettings) -> Result<Box<dyn VideoWriter>>;
+
+    /// Whether this system can encode `codec`, so a UI can hide the codecs
+    /// [`create`](Self::create) would reject as unsupported.
+    fn supports(&self, codec: VideoCodec) -> bool;
 }
 
 /// One export in progress. Dropping it without [`VideoWriter::finish`]

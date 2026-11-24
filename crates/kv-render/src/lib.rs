@@ -5,8 +5,12 @@
 //!   their blend weights ([`plan`], [`FramePlan`]).
 //! - The CPU export compositor (ADR 0009): turns a frame's decoded layers
 //!   into output pixels ([`composite`], [`Fit`], [`source_size_for`]).
+//! - The GPU preview compositor (ADR 0007), the same compositing on wgpu
+//!   ([`gpu::GpuCompositor`], feature `gpu`, on by default).
 
 mod composite;
+#[cfg(feature = "gpu")]
+pub mod gpu;
 
 pub use composite::{composite, source_size_for, CompositeError, Fit};
 

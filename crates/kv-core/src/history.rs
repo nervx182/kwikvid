@@ -109,6 +109,34 @@ impl History {
         self.undo.last().map(|s| &s.commands[0])
     }
 
+    /// Rewrite every media and music path held by the history: the current
+    /// project, every undo and redo state, and the paths inside stored
+    /// `AddMedia` / `SetMusic` commands. Used when the folder the paths are
+    /// relative to changes (Save As); this is not an edit, so it is not an
+    /// undo step and the stacks keep their length.
+    ///
+    /// On error the history may be partly rewritten; call it on a clone to
+    /// keep the original.
+    pub fn try_map_paths<E>(
+        &mut self,
+        mut f: impl FnMut(&str) -> Result<String, E>,
+    ) -> Result<(), E> {
+        self.project.try_map_paths(&mut f)?;
+        for step in self.undo.iter_mut().chain(self.redo.iter_mut()) {
+            step.state.try_map_paths(&mut f)?;
+            for command in &mut step.commands {
+                match command {
+                    Command::AddMedia { item } => item.path = f(&item.path)?,
+                    Command::SetMusic {
+                        music: Some(music), ..
+                    } => music.path = f(&music.path)?,
+                    _ => {}
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()
     }
