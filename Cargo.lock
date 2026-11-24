@@ -652,6 +652,7 @@ dependencies = [
  "ffmpeg-next",
  "kv-core",
  "serde",
+ "serde_json",
  "thiserror",
 ]
 
