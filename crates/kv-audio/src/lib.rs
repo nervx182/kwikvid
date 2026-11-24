@@ -17,8 +17,12 @@
 //!
 //! The beat list is the primary cut-point tier; [`MusicAnalysis::downbeats`]
 //! is a coarser tier and [`MusicAnalysis::onsets`] a finer, irregular one.
+//!
+//! For export, [`render_music_bed`] decodes the same file to stereo PCM at
+//! the encoder's rate, trimmed to the edit, with volume and fades.
 
 mod beat;
+mod bed;
 mod decode;
 mod onset;
 mod tempo;
@@ -27,6 +31,8 @@ use std::path::Path;
 
 use kv_core::Micros;
 use serde::{Deserialize, Serialize};
+
+pub use bed::{render_music_bed, MusicBedOptions, PcmAudio, DEFAULT_FADE_OUT};
 
 /// Sample rate the analysis runs at, in Hz. Input is resampled to it.
 pub const ANALYSIS_SAMPLE_RATE: u32 = 22_050;
@@ -55,7 +61,7 @@ pub struct MusicAnalysis {
     pub energy: Vec<f32>,
 }
 
-/// Errors from [`analyze`].
+/// Errors from [`analyze`] and [`render_music_bed`].
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
@@ -71,9 +77,12 @@ pub enum Error {
     /// The file uses something this decoder does not support.
     #[error("unsupported audio: {0}")]
     Unsupported(&'static str),
-    /// Resampling to the analysis rate failed.
+    /// Resampling failed.
     #[error("resampling failed: {0}")]
     Resample(String),
+    /// [`MusicBedOptions`] are out of range.
+    #[error("invalid music bed options: {0}")]
+    InvalidOptions(&'static str),
 }
 
 /// Decode the music file at `path` and analyse it.
