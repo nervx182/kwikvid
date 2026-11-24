@@ -27,6 +27,7 @@ fn add_clip(id: u64) -> Command {
             duration: secs(10),
             kind: MediaKind::Video,
             hilights: vec![secs(1)],
+            clip_audio: false,
         },
     }
 }

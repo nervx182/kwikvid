@@ -66,6 +66,12 @@ fn core_message(e: &CoreError) -> &'static str {
         CoreError::InvalidTargetLength(_) => "The edit length must be longer than zero.",
         CoreError::SegmentIndexOutOfRange { .. } => "That cut is no longer in the timeline.",
         CoreError::InvalidSegment { .. } => "The edit contains an invalid cut.",
+        CoreError::CutIndexOutOfRange { .. } => "That cut is no longer in the timeline.",
+        CoreError::CutTooShort { .. } => "Moving that cut would make a clip too short.",
+        CoreError::CutOutsideMedia { .. } => "Moving that cut would run past the end of a clip.",
+        CoreError::InvalidMusicVolume(_) => "Music volume must be between 0 and 100%.",
+        CoreError::InvalidTitleText { .. } => "The title must have some text and not be too long.",
+        CoreError::InvalidTitleDuration { .. } => "That title duration is too short or too long.",
     }
 }
 
