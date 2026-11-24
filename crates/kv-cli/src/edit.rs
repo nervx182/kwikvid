@@ -4,7 +4,7 @@
 //! durations (probe or `--durations`), HiLights and the music analysis, builds
 //! a [`Project`] through `kv-core` [`Command`]s, runs the auto-edit and stores
 //! the result with [`Command::ReplaceEdl`]. [`run`] then prints the plan
-//! (`--dry-run`); rendering it to a video file is a later output mode.
+//! (`--dry-run`) or hands it to [`crate::render`] to write the video.
 
 use std::fmt::Write as _;
 use std::path::{Component, Path, PathBuf};
@@ -15,7 +15,7 @@ use kv_core::{
     Command, MediaId, MediaItem, MediaKind, Micros, MusicRef, Project, ProjectId, RangeRef,
     TargetLength,
 };
-use kv_media::MediaBackend;
+use kv_media::{FfmpegBackend, MediaBackend, MediaInfo};
 use serde::Serialize;
 
 use crate::cli::EditArgs;
@@ -32,6 +32,9 @@ pub struct Clip {
     pub path: PathBuf,
     /// The path as the user gave it (or as found in a `--clips` directory).
     pub name: String,
+    /// Probe result, when the file was already probed (directory entries
+    /// are, to sort them by creation time).
+    pub info: Option<MediaInfo>,
 }
 
 /// A finished edit plan: the project (media, music, constraints and EDL, all
@@ -44,6 +47,8 @@ pub struct Plan {
     pub music_name: String,
     pub music: MusicAnalysis,
     pub target_length: Micros,
+    /// Directory the project's media paths are relative to.
+    pub root: PathBuf,
 }
 
 impl Plan {
@@ -71,7 +76,7 @@ impl Plan {
 
 pub fn run(args: &EditArgs) -> anyhow::Result<()> {
     if !args.dry_run {
-        bail!("rendering to a video file is not implemented yet; pass --dry-run to print the edit");
+        return crate::render::run(args);
     }
     let plan = plan(args)?;
     if args.json {
@@ -83,7 +88,8 @@ pub fn run(args: &EditArgs) -> anyhow::Result<()> {
 
 /// Build the edit described by `args`.
 pub fn plan(args: &EditArgs) -> anyhow::Result<Plan> {
-    let clips = expand_clips(&args.clips)?;
+    let mut prober = Prober::default();
+    let clips = expand_clips(&args.clips, &mut prober)?;
     let base = std::env::current_dir().context("cannot read the current directory")?;
 
     let mut durations: Vec<Option<Micros>> = vec![None; clips.len()];
@@ -91,21 +97,18 @@ pub fn plan(args: &EditArgs) -> anyhow::Result<Plan> {
         let i = find_clip(&clips, &d.clip).with_context(|| format!("--durations {}", d.clip))?;
         durations[i] = Some(d.duration);
     }
-    let mut backend: Option<kv_media::FfmpegBackend> = None;
     let mut project = Project::new(ProjectId(1));
     let section = Project::DEFAULT_SECTION;
 
     for (i, clip) in clips.iter().enumerate() {
-        let duration = match durations[i] {
-            Some(d) => d,
-            None => {
-                let b = match backend {
-                    Some(b) => b,
-                    None => *backend.insert(kv_media::FfmpegBackend::new().context(
-                        "cannot start the media prober; pass --durations to skip probing",
-                    )?),
-                };
-                b.probe(&clip.path)
+        let duration = match (durations[i], &clip.info) {
+            (Some(d), _) => d,
+            (None, Some(info)) => info.duration,
+            (None, None) => {
+                prober
+                    .backend()
+                    .context("cannot start the media prober; pass --durations to skip probing")?
+                    .probe(&clip.path)
                     .with_context(|| format!("cannot probe clip {:?}", clip.name))?
                     .duration
             }
@@ -114,7 +117,10 @@ pub fn plan(args: &EditArgs) -> anyhow::Result<Plan> {
             bail!("clip {:?} has no duration", clip.name);
         }
         // HiLights are optional: non-GoPro files simply have none.
-        let mut hilights = kv_gopro::read_hilights(&clip.path).unwrap_or_default();
+        let mut hilights = kv_gopro::read_hilights(&clip.path).unwrap_or_else(|e| {
+            tracing::debug!(clip = %clip.name, error = %e, "no HiLights");
+            Vec::new()
+        });
         hilights.retain(|h| h.0 >= 0 && *h <= duration);
         let item = MediaItem {
             id: MediaId(i as u64 + 1),
@@ -192,16 +198,45 @@ pub fn plan(args: &EditArgs) -> anyhow::Result<Plan> {
         music_name,
         music,
         target_length,
+        root: base,
     })
 }
 
+/// Opens the FFmpeg backend on first use, so `--durations` runs over files
+/// that need no probing never touch FFmpeg.
+#[derive(Default)]
+struct Prober {
+    backend: Option<FfmpegBackend>,
+}
+
+impl Prober {
+    fn backend(&mut self) -> kv_media::Result<FfmpegBackend> {
+        match self.backend {
+            Some(b) => Ok(b),
+            None => Ok(*self.backend.insert(FfmpegBackend::new()?)),
+        }
+    }
+
+    /// Probe `path`, or `None` (logged) if it cannot be probed.
+    fn try_probe(&mut self, path: &Path) -> Option<MediaInfo> {
+        match self.backend().and_then(|b| b.probe(path)) {
+            Ok(info) => Some(info),
+            Err(e) => {
+                tracing::debug!(path = %path.display(), error = %e, "cannot probe clip");
+                None
+            }
+        }
+    }
+}
+
 /// Expand `--clips`: files are kept as given, directories contribute their
-/// video files in name order. Every clip must exist and appear once.
-fn expand_clips(inputs: &[PathBuf]) -> anyhow::Result<Vec<Clip>> {
+/// video files sorted by [`directory_order`]. Every clip must exist and
+/// appear once.
+fn expand_clips(inputs: &[PathBuf], prober: &mut Prober) -> anyhow::Result<Vec<Clip>> {
     let mut clips: Vec<Clip> = Vec::new();
     for input in inputs {
         if input.is_dir() {
-            let mut found: Vec<PathBuf> = std::fs::read_dir(input)
+            let found: Vec<PathBuf> = std::fs::read_dir(input)
                 .with_context(|| format!("cannot read clip directory {:?}", input.display()))?
                 .filter_map(|e| e.ok().map(|e| e.path()))
                 .filter(|p| p.is_file() && is_video(p))
@@ -213,15 +248,21 @@ fn expand_clips(inputs: &[PathBuf]) -> anyhow::Result<Vec<Clip>> {
                     VIDEO_EXTENSIONS.join("/")
                 );
             }
-            found.sort();
-            clips.extend(found.into_iter().map(|path| Clip {
-                name: path.display().to_string(),
-                path,
-            }));
+            let mut found: Vec<Clip> = found
+                .into_iter()
+                .map(|path| Clip {
+                    name: path.display().to_string(),
+                    info: prober.try_probe(&path),
+                    path,
+                })
+                .collect();
+            found.sort_by(|a, b| directory_order(a).cmp(&directory_order(b)));
+            clips.extend(found);
         } else if input.is_file() {
             clips.push(Clip {
                 path: input.clone(),
                 name: input.display().to_string(),
+                info: None,
             });
         } else {
             bail!("clip {:?} not found", input.display().to_string());
@@ -233,6 +274,14 @@ fn expand_clips(inputs: &[PathBuf]) -> anyhow::Result<Vec<Clip>> {
         }
     }
     Ok(clips)
+}
+
+/// Sort key of a clip found in a `--clips` directory: recording order, by
+/// the probed creation time, then by path (guess: matches Quik's
+/// chronological default). Clips without a creation time come last.
+fn directory_order(c: &Clip) -> (bool, Option<Micros>, &Path) {
+    let created = c.info.as_ref().and_then(|i| i.creation_time);
+    (created.is_none(), created, &c.path)
 }
 
 fn is_video(p: &Path) -> bool {
@@ -473,6 +522,7 @@ mod tests {
             .map(|n| Clip {
                 path: PathBuf::from(n),
                 name: (*n).to_owned(),
+                info: None,
             })
             .collect()
     }
