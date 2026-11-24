@@ -173,6 +173,59 @@ fn taps(start: usize, end: usize, offset: i64, scaled: u32, src: u32) -> Vec<Tap
         .collect()
 }
 
+/// Where a layer lands in the output: the scaled size, its (centred)
+/// offset, and the covered output rectangle `[x0, x1) x [y0, y1)`. Shared
+/// with the GPU compositor so both place layers identically.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Placement {
+    pub sw: u32,
+    pub sh: u32,
+    pub off_x: i64,
+    pub off_y: i64,
+    pub x0: usize,
+    pub x1: usize,
+    pub y0: usize,
+    pub y1: usize,
+}
+
+impl Placement {
+    pub(crate) fn new(src_w: u32, src_h: u32, out_w: u32, out_h: u32, fit: Fit) -> Self {
+        let (sw, sh) = source_size_for(out_w, out_h, src_w, src_h, fit);
+        if sw == 0 || sh == 0 {
+            return Placement {
+                sw,
+                sh,
+                off_x: 0,
+                off_y: 0,
+                x0: 0,
+                x1: 0,
+                y0: 0,
+                y1: 0,
+            };
+        }
+        // Centre; with an odd difference the extra pixel goes right / bottom.
+        let off_x = (i64::from(out_w) - i64::from(sw)).div_euclid(2);
+        let off_y = (i64::from(out_h) - i64::from(sh)).div_euclid(2);
+        let span = |off: i64, len: u32, out: u32| {
+            let a = off.clamp(0, i64::from(out)) as usize;
+            let b = (off + i64::from(len)).clamp(0, i64::from(out)) as usize;
+            (a, b)
+        };
+        let (x0, x1) = span(off_x, sw, out_w);
+        let (y0, y1) = span(off_y, sh, out_h);
+        Placement {
+            sw,
+            sh,
+            off_x,
+            off_y,
+            x0,
+            x1,
+            y0,
+            y1,
+        }
+    }
+}
+
 /// One layer resolved against the output geometry.
 struct Prepared<'a> {
     frame: &'a VideoFrame,
@@ -191,8 +244,8 @@ struct Prepared<'a> {
 
 impl<'a> Prepared<'a> {
     fn new(frame: &'a VideoFrame, weight: f32, out_w: u32, out_h: u32, fit: Fit) -> Self {
-        let (sw, sh) = source_size_for(out_w, out_h, frame.width, frame.height, fit);
-        if sw == 0 || sh == 0 {
+        let p = Placement::new(frame.width, frame.height, out_w, out_h, fit);
+        if p.sw == 0 || p.sh == 0 {
             return Prepared {
                 frame,
                 weight,
@@ -205,26 +258,16 @@ impl<'a> Prepared<'a> {
                 unscaled: false,
             };
         }
-        // Centre; with an odd difference the extra pixel goes right / bottom.
-        let off_x = (i64::from(out_w) - i64::from(sw)).div_euclid(2);
-        let off_y = (i64::from(out_h) - i64::from(sh)).div_euclid(2);
-        let span = |off: i64, len: u32, out: u32| {
-            let a = off.clamp(0, i64::from(out)) as usize;
-            let b = (off + i64::from(len)).clamp(0, i64::from(out)) as usize;
-            (a, b)
-        };
-        let (x0, x1) = span(off_x, sw, out_w);
-        let (y0, y1) = span(off_y, sh, out_h);
         Prepared {
             frame,
             weight,
-            x0,
-            x1,
-            y0,
-            y1,
-            xs: taps(x0, x1, off_x, sw, frame.width),
-            ys: taps(y0, y1, off_y, sh, frame.height),
-            unscaled: sw == frame.width && sh == frame.height,
+            x0: p.x0,
+            x1: p.x1,
+            y0: p.y0,
+            y1: p.y1,
+            xs: taps(p.x0, p.x1, p.off_x, p.sw, frame.width),
+            ys: taps(p.y0, p.y1, p.off_y, p.sh, frame.height),
+            unscaled: p.sw == frame.width && p.sh == frame.height,
         }
     }
 
