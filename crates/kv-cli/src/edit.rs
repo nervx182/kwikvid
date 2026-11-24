@@ -122,6 +122,7 @@ pub fn plan(args: &EditArgs) -> anyhow::Result<Plan> {
             duration,
             kind: MediaKind::Video,
             hilights,
+            clip_audio: false,
         };
         project
             .apply(Command::AddMedia { item })

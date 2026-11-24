@@ -1,9 +1,14 @@
 //! kwikvid rendering.
 //!
-//! For now this crate holds only the frame plan: the pure mapping from an
-//! edit decision list ([`Edl`]) to output frames, each listing the source
-//! frames visible in it and their blend weights. Pixels (decoding, scaling,
-//! blending) come later and consume a [`FramePlan`].
+//! - The frame plan: the pure mapping from an edit decision list ([`Edl`])
+//!   to output frames, each listing the source frames visible in it and
+//!   their blend weights ([`plan`], [`FramePlan`]).
+//! - The CPU export compositor (ADR 0009): turns a frame's decoded layers
+//!   into output pixels ([`composite`], [`Fit`], [`source_size_for`]).
+
+mod composite;
+
+pub use composite::{composite, source_size_for, CompositeError, Fit};
 
 use kv_core::{Edl, MediaId, Micros, Segment, Speed, Transition};
 use kv_media::Rational;

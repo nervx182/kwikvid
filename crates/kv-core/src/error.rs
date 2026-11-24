@@ -56,4 +56,39 @@ pub enum CoreError {
 
     #[error("segment {index} is invalid: {reason}")]
     InvalidSegment { index: usize, reason: &'static str },
+
+    #[error("cut {cut} is out of range: a cut sits between two segments, so it must be 1..{len} for an EDL of {len} segments")]
+    CutIndexOutOfRange { cut: usize, len: usize },
+
+    #[error(
+        "moving cut {cut} to {to:?} would make segment {index} shorter than the minimum {min:?}"
+    )]
+    CutTooShort {
+        cut: usize,
+        to: Micros,
+        index: usize,
+        min: Micros,
+    },
+
+    #[error("moving cut {cut} to {to:?} would extend segment {index} outside its media")]
+    CutOutsideMedia {
+        cut: usize,
+        to: Micros,
+        index: usize,
+    },
+
+    #[error("music volume must be 0..=100 percent, got {0}")]
+    InvalidMusicVolume(u8),
+
+    #[error(
+        "title text must be 1..={max} characters and not only whitespace, got {chars} characters"
+    )]
+    InvalidTitleText { chars: usize, max: usize },
+
+    #[error("title duration must be {min:?}..={max:?}, got {duration:?}")]
+    InvalidTitleDuration {
+        duration: Micros,
+        min: Micros,
+        max: Micros,
+    },
 }
