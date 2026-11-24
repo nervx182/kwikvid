@@ -8,11 +8,14 @@
 //! - The export pipeline: a project section to an MP4 ([`export()`]).
 //! - The GPU preview compositor (ADR 0007), the same compositing on wgpu
 //!   ([`gpu::GpuCompositor`], feature `gpu`, on by default).
+//! - The live preview engine: playback clock, decode-ahead, seek
+//!   ([`preview::PreviewEngine`]).
 
 mod composite;
 mod export;
 #[cfg(feature = "gpu")]
 pub mod gpu;
+pub mod preview;
 
 pub use composite::{composite, source_size_for, CompositeError, Fit};
 pub use export::{export, ExportReport, Progress, RenderError, MAX_OPEN_READERS, MUSIC_FADE_OUT};
