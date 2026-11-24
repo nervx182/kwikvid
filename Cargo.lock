@@ -915,10 +915,14 @@ dependencies = [
  "kv-core",
  "kv-gopro",
  "kv-media",
+ "kv-render",
  "kv-testkit",
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
