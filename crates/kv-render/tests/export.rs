@@ -67,6 +67,7 @@ fn project() -> (Project, PathBuf) {
             kind: MediaKind::Video,
             hilights: vec![],
             clip_audio: false,
+            chapters: Vec::new(),
         });
     }
     let mut edl = Edl {
