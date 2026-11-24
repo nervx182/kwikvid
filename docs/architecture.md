@@ -36,7 +36,7 @@ CLI, MCP server) that all drive the engine through the same serialisable
 | kv-core | Project model, timeline, EDL, Command API, undo, project file (JSON) | serde, thiserror |
 | kv-autoedit | Segment scoring, beat snapping, constraints (force include/exclude) | proptest (tests) |
 | kv-audio | Music decode, onset and tempo detection, beat markers | symphonia, rubato, rustfft |
-| kv-gopro | GPMF telemetry, HiLight tags, chaptered file grouping (GH/GX) | gpmf-parser (bindgen) |
+| kv-gopro | GPMF telemetry, HiLight tags, chaptered file grouping (GH/GX) | none: pure-Rust MP4 box + GPMF KLV reader (ADR 0006) |
 | kv-media | Probe, decode, thumbnails, proxies, export | ffmpeg-next (LGPL build), VideoToolbox |
 | kv-render | GPU compositing, transitions, speed, titles, preview frames | wgpu |
 | kv-cache | Thumbnail, waveform and analysis cache | rusqlite |
