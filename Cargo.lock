@@ -2499,6 +2499,8 @@ dependencies = [
 name = "kv-render"
 version = "0.0.1"
 dependencies = [
+ "ffmpeg-next",
+ "kv-audio",
  "kv-core",
  "kv-media",
  "kv-testkit",
