@@ -131,7 +131,7 @@ struct Shown {
 #[derive(Clone)]
 struct Recorder {
     shown: Arc<StdMutex<Vec<Shown>>>,
-    clock: Arc<ManualClock>,
+    clock: Arc<dyn Clock>,
 }
 
 impl FrameSink for Recorder {
@@ -215,6 +215,35 @@ fn index_of(s: &Shown) -> u64 {
     index_at(FPS, s.pts, u64::MAX).unwrap()
 }
 
+/// An engine on `media` driven by `clock`, recording what it shows.
+fn engine_with(
+    media: Arc<FakeMedia>,
+    threads: usize,
+    clock: Arc<dyn Clock>,
+) -> (PreviewEngine, Arc<StdMutex<Vec<Shown>>>) {
+    let shown = Arc::new(StdMutex::new(Vec::new()));
+    let sink = Recorder {
+        shown: Arc::clone(&shown),
+        clock: Arc::clone(&clock),
+    };
+    let config = PreviewConfig {
+        fps: FPS,
+        media_root: PathBuf::from("/media"),
+        decode_threads: threads,
+        max_wait: WAIT,
+        clock,
+        ..PreviewConfig::default()
+    };
+    let engine = PreviewEngine::new(
+        media,
+        Box::new(CpuCompositor::new(W, H).unwrap()),
+        Box::new(sink),
+        config,
+    )
+    .unwrap();
+    (engine, shown)
+}
+
 struct Rig {
     engine: PreviewEngine,
     clock: Arc<ManualClock>,
@@ -229,26 +258,7 @@ impl Rig {
 
     fn with_clock(media: FakeMedia, threads: usize, clock: Arc<ManualClock>) -> Rig {
         let media = Arc::new(media);
-        let shown = Arc::new(StdMutex::new(Vec::new()));
-        let sink = Recorder {
-            shown: Arc::clone(&shown),
-            clock: Arc::clone(&clock),
-        };
-        let config = PreviewConfig {
-            fps: FPS,
-            media_root: PathBuf::from("/media"),
-            decode_threads: threads,
-            max_wait: WAIT,
-            clock: clock.clone(),
-            ..PreviewConfig::default()
-        };
-        let engine = PreviewEngine::new(
-            media.clone(),
-            Box::new(CpuCompositor::new(W, H).unwrap()),
-            Box::new(sink),
-            config,
-        )
-        .unwrap();
+        let (engine, shown) = engine_with(media.clone(), threads, clock.clone());
         Rig {
             engine,
             clock,
@@ -606,7 +616,7 @@ fn gpu_compositor_presents_textures() {
     let shown = Arc::new(StdMutex::new(Vec::new()));
     let sink = Recorder {
         shown: Arc::clone(&shown),
-        clock: Arc::clone(&clock),
+        clock: clock.clone(),
     };
     let engine = PreviewEngine::new(
         Arc::new(FakeMedia::default()),
@@ -631,4 +641,106 @@ fn gpu_compositor_presents_textures() {
     assert_eq!(shown.len(), 2);
     assert_eq!(shown[0].pts, pts(30));
     assert!(shown.iter().all(|s| s.size == (W, H)));
+}
+
+/// Video frame selection follows the audio clock: the engine shows what is
+/// due at the frames the (fake) device has played, and the samples it plays
+/// are the bed at the position on screen.
+#[test]
+fn audio_clock_drives_video_and_follows_seeks() {
+    use audio::tests::{fake, frames_of, ramp, FMT};
+
+    let (audio, dev) = fake(FMT);
+    let clock = audio.clock();
+    let (engine, shown) = engine_with(Arc::new(FakeMedia::default()), 2, clock.clone());
+    audio.attach(&engine);
+    engine
+        .set_edit(&three_segments(), Project::DEFAULT_SECTION)
+        .unwrap();
+    // A 2 s bed whose sample value tells its timeline millisecond.
+    audio.set_pcm(ramp(2_000)).unwrap();
+
+    // Paused: the device runs (silence) and the clock moves, the picture
+    // does not.
+    assert!(frames_of(&dev.pull(100, Micros(0)))
+        .iter()
+        .all(Option::is_none));
+    assert_eq!(engine.tick().unwrap(), Tick::Presented(0));
+    assert!(!engine.transport().playing);
+
+    engine.play();
+    assert!(engine.transport().playing);
+    for k in 1..30u64 {
+        // Play exactly up to frame k's pts in 1 ms device frames.
+        let to = (pts(k).0 + 999) / 1_000;
+        let at = (clock.now().0 - 100_000) / 1_000;
+        let got = frames_of(&dev.pull((to - at) as usize, Micros(0)));
+        let want: Vec<_> = (at..to).map(Some).collect();
+        assert_eq!(got, want, "frame {k}: audio is the bed at the playhead");
+        assert_eq!(engine.tick().unwrap(), Tick::Presented(k));
+        assert_eq!(engine.position(), Micros(to * 1_000));
+    }
+    let last = *lock(&shown).last().unwrap();
+    assert_eq!(last.tag, Some(expected(29)));
+
+    // Seek while playing: the next device buffer plays from the target and
+    // the picture shows it.
+    engine.seek(Micros(1_500_000));
+    let got = frames_of(&dev.pull(10, Micros(0)));
+    assert_eq!(got, (1_500..1_510).map(Some).collect::<Vec<_>>());
+    assert_eq!(engine.position(), Micros(1_510_000));
+    assert_eq!(engine.tick().unwrap(), Tick::Presented(45));
+    assert_eq!(lock(&shown).last().unwrap().tag, Some(expected(45)));
+
+    // Pause: silence, position held although the device clock runs on.
+    engine.pause();
+    assert!(frames_of(&dev.pull(50, Micros(0)))
+        .iter()
+        .all(Option::is_none));
+    assert_eq!(engine.position(), Micros(1_510_000));
+
+    // Play to the end: the engine stops and the sound with it.
+    engine.play();
+    dev.pull(600, Micros(0));
+    assert_eq!(engine.tick().unwrap(), Tick::Presented(59));
+    assert!(!engine.transport().playing);
+    assert!(frames_of(&dev.pull(10, Micros(0)))
+        .iter()
+        .all(Option::is_none));
+}
+
+#[test]
+fn transport_reports_every_change() {
+    let rig = Rig::new(FakeMedia::default(), 1);
+    let seen = Arc::new(StdMutex::new(Vec::new()));
+    let s = Arc::clone(&seen);
+    rig.engine.on_transport(move |t| lock(&s).push(t));
+    rig.engine
+        .set_edit(&three_segments(), Project::DEFAULT_SECTION)
+        .unwrap();
+    rig.clock.set(Micros(1_000));
+    rig.engine.play();
+    rig.clock.set(Micros(301_000));
+    rig.engine.seek(Micros(1_000_000));
+    rig.clock.set(Micros(401_000));
+    rig.engine.pause();
+    let end = Micros(2_000_000);
+    let t = |playing, pos, anchor| Transport {
+        playing,
+        pos: Micros(pos),
+        anchor: Micros(anchor),
+        end,
+    };
+    assert_eq!(
+        *lock(&seen),
+        vec![
+            Transport::default(),
+            t(false, 0, 0),
+            t(true, 0, 1_000),
+            t(true, 1_000_000, 301_000),
+            t(false, 1_100_000, 401_000),
+        ]
+    );
+    assert_eq!(rig.engine.transport(), t(false, 1_100_000, 401_000));
+    assert_eq!(t(true, 0, 1_000).position(Micros(3_000_000)), end);
 }

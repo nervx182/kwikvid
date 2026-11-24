@@ -8,8 +8,8 @@ use kv_core::Micros;
 /// A monotonic time source that drives playback. The engine reads it to pick
 /// the frame to show; frames are never chosen by how fast they decode.
 ///
-/// [`SystemClock`] is the default; the audio output later provides a clock
-/// driven by the samples actually played, so picture follows sound.
+/// [`SystemClock`] is the default; [`super::audio::AudioClock`] is driven by
+/// the samples the audio device has played, so picture follows sound.
 pub trait Clock: Send + Sync {
     /// Current time. Must never go backwards; the origin is arbitrary.
     fn now(&self) -> Micros;

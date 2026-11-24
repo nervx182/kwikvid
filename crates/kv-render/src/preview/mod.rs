@@ -27,7 +27,12 @@
 //!
 //! Driving: the native layer calls [`PreviewEngine::tick`] once per vsync;
 //! [`Pacer`] does it on a thread for hosts without one.
+//!
+//! Sound: [`audio::PreviewAudio`] plays the music bed. Its clock is the
+//! engine's [`PreviewConfig::clock`] and it follows the engine's
+//! [`Transport`], so picture follows the frames the device has played.
 
+pub mod audio;
 mod clock;
 mod output;
 
@@ -98,7 +103,8 @@ pub struct PreviewConfig {
     pub decode_threads: usize,
     /// Longest a [`PreviewEngine::tick`] blocks waiting for the due frame.
     pub max_wait: Duration,
-    /// Drives playback. The audio output will provide its own.
+    /// Drives playback: [`audio::PreviewAudio::clock`] when there is sound,
+    /// so picture follows the audio device.
     pub clock: Arc<dyn Clock>,
 }
 
@@ -162,6 +168,47 @@ pub enum Tick {
 
 type Key = (MediaId, Micros);
 type PositionCallback = Arc<dyn Fn(Micros) + Send + Sync>;
+type TransportCallback = Arc<dyn Fn(Transport) + Send + Sync>;
+
+/// The engine's playback state on the [`Clock`]'s timeline, for followers
+/// such as the audio output: at clock time `t` the playhead is at
+/// `pos + (t - anchor)` while `playing` (else `pos`), clamped to `0..=end`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Transport {
+    pub playing: bool,
+    /// Position at clock time `anchor` (the position while paused).
+    pub pos: Micros,
+    /// Clock time at which playback (re)started from `pos`.
+    pub anchor: Micros,
+    /// Length of the edit (0 without one).
+    pub end: Micros,
+}
+
+impl Default for Transport {
+    /// Paused at 0 with no edit.
+    fn default() -> Self {
+        Transport {
+            playing: false,
+            pos: Micros(0),
+            anchor: Micros(0),
+            end: Micros(0),
+        }
+    }
+}
+
+impl Transport {
+    /// Playhead position at clock time `now`.
+    pub fn position(&self, now: Micros) -> Micros {
+        let p = if self.playing {
+            self.pos
+                .0
+                .saturating_add(now.0.saturating_sub(self.anchor.0))
+        } else {
+            self.pos.0
+        };
+        Micros(p.clamp(0, self.end.0.max(0)))
+    }
+}
 
 enum Slot {
     Pending,
@@ -205,19 +252,31 @@ struct State {
     seek: Option<PendingSeek>,
     stats: PreviewStats,
     shutdown: bool,
+    /// Told about every transport change, under the state lock (so in
+    /// order).
+    on_transport: Option<TransportCallback>,
 }
 
 impl State {
+    fn transport(&self) -> Transport {
+        Transport {
+            playing: self.playing,
+            pos: self.pos,
+            anchor: self.anchor,
+            end: self.edit.as_ref().map_or(Micros(0), |e| e.end),
+        }
+    }
+
     fn position(&self, now: Micros) -> Micros {
-        let end = self.edit.as_ref().map_or(Micros(0), |e| e.end);
-        let p = if self.playing {
-            self.pos
-                .0
-                .saturating_add(now.0.saturating_sub(self.anchor.0))
-        } else {
-            self.pos.0
-        };
-        Micros(p.clamp(0, end.0))
+        self.transport().position(now)
+    }
+
+    /// Tell the transport follower (call after changing `playing`, `pos`,
+    /// `anchor` or the edit).
+    fn publish(&self) {
+        if let Some(cb) = &self.on_transport {
+            cb(self.transport());
+        }
     }
 
     /// Drop queued work and decoded frames (a seek or a new edit).
@@ -298,6 +357,7 @@ impl PreviewEngine {
                 seek: None,
                 stats: PreviewStats::default(),
                 shutdown: false,
+                on_transport: None,
             }),
             changed: Condvar::new(),
             work: Condvar::new(),
@@ -376,6 +436,7 @@ impl PreviewEngine {
             if st.edit.as_ref().is_some_and(|e| e.end <= pos) {
                 st.playing = false;
             }
+            st.publish();
             self.schedule(&mut st, pos);
             pos
         };
@@ -406,6 +467,7 @@ impl PreviewEngine {
             } else {
                 k as i64 - 1
             };
+            st.publish();
         }
         self.shared.notify();
     }
@@ -417,6 +479,8 @@ impl PreviewEngine {
             let mut st = self.shared.lock();
             st.pos = st.position(now);
             st.playing = false;
+            st.anchor = now;
+            st.publish();
         }
         self.shared.notify();
     }
@@ -449,6 +513,7 @@ impl PreviewEngine {
                     latency_us = tracing::field::Empty
                 ),
             });
+            st.publish();
             self.schedule(&mut st, pos);
             pos
         };
@@ -466,6 +531,21 @@ impl PreviewEngine {
     /// previous callback. Runs on the calling thread of `tick`/`seek`.
     pub fn on_position(&self, f: impl Fn(Micros) + Send + Sync + 'static) {
         *lock(&self.on_position) = Some(Arc::new(f));
+    }
+
+    /// Call `f` with the [`Transport`] now and after every change (play,
+    /// pause, seek, edit, end reached). Replaces any previous callback. It
+    /// runs under the engine's state lock, so calls arrive in order; it must
+    /// be quick and must not call back into the engine.
+    pub fn on_transport(&self, f: impl Fn(Transport) + Send + Sync + 'static) {
+        let mut st = self.shared.lock();
+        st.on_transport = Some(Arc::new(f));
+        st.publish();
+    }
+
+    /// The current [`Transport`].
+    pub fn transport(&self) -> Transport {
+        self.shared.lock().transport()
     }
 
     /// Counters since the engine was created.
@@ -493,7 +573,9 @@ impl PreviewEngine {
             if st.playing && pos >= end {
                 st.playing = false;
                 st.pos = end;
+                st.anchor = now;
                 pos = end;
+                st.publish();
             }
             let Some(k) = index_at(self.config.fps, pos, len) else {
                 return Ok(Tick::Idle);
