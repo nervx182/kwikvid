@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 kv-core = { path = "../kv-core" }
 thiserror.workspace = true
+tracing = { version = "0.1", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 proptest.workspace = true

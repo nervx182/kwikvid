@@ -16,6 +16,7 @@ fn clip(id: u64, dur_secs: i64) -> MediaItem {
         kind: MediaKind::Video,
         hilights: vec![secs(1)],
         clip_audio: false,
+        chapters: Vec::new(),
     }
 }
 
@@ -1125,4 +1126,147 @@ fn history_try_map_paths_rewrites_every_state_without_new_steps() {
 
     // Errors propagate.
     assert_eq!(h.try_map_paths(|_| Err("no")), Err("no"));
+}
+
+fn chapter(path: &str, dur_secs: i64) -> ChapterRef {
+    ChapterRef {
+        path: path.into(),
+        duration: secs(dur_secs),
+    }
+}
+
+/// A two-chapter recording: 10 s + 4 s.
+fn chaptered(id: u64) -> MediaItem {
+    MediaItem {
+        path: "clips/GX010042.MP4".into(),
+        duration: secs(14),
+        hilights: vec![secs(12)],
+        chapters: vec![
+            chapter("clips/GX010042.MP4", 10),
+            chapter("clips/GX020042.MP4", 4),
+        ],
+        ..clip(id, 14)
+    }
+}
+
+#[test]
+fn add_chaptered_media() {
+    let mut p = Project::new(ProjectId(1));
+    let ev = p.apply(Command::AddMedia { item: chaptered(1) }).unwrap();
+    assert_eq!(
+        ev,
+        Event::MediaAdded {
+            media_id: MediaId(1)
+        }
+    );
+    let item = p.media_item(MediaId(1)).unwrap();
+    assert_eq!(item.chapters.len(), 2);
+    // Ranges span the chapter boundary like any other time in the item.
+    p.apply(Command::PinRange {
+        section: S,
+        range: range(1, 9, 11),
+    })
+    .unwrap();
+}
+
+#[test]
+fn add_chaptered_media_invalid() {
+    let p = Project::new(ProjectId(1));
+    let cases: Vec<(MediaItem, CoreError)> = vec![
+        (
+            MediaItem {
+                path: "clips/GX020042.MP4".into(),
+                ..chaptered(1)
+            },
+            CoreError::ChapterPathMismatch {
+                path: "clips/GX020042.MP4".into(),
+                first: "clips/GX010042.MP4".into(),
+            },
+        ),
+        (
+            MediaItem {
+                duration: secs(13),
+                hilights: Vec::new(),
+                ..chaptered(1)
+            },
+            CoreError::ChapterDurationMismatch {
+                duration: secs(13),
+                sum: secs(14),
+            },
+        ),
+        (
+            MediaItem {
+                chapters: vec![
+                    chapter("clips/GX010042.MP4", 10),
+                    chapter("/card/GX020042.MP4", 4),
+                ],
+                ..chaptered(1)
+            },
+            CoreError::InvalidPath("/card/GX020042.MP4".into()),
+        ),
+        (
+            MediaItem {
+                chapters: vec![
+                    chapter("clips/GX010042.MP4", 14),
+                    chapter("clips/GX020042.MP4", 0),
+                ],
+                ..chaptered(1)
+            },
+            CoreError::InvalidDuration(Micros(0)),
+        ),
+        (
+            MediaItem {
+                chapters: vec![
+                    chapter("clips/GX010042.MP4", 16),
+                    chapter("clips/GX020042.MP4", -2),
+                ],
+                ..chaptered(1)
+            },
+            CoreError::InvalidDuration(secs(-2)),
+        ),
+    ];
+    for (item, want) in cases {
+        assert_eq!(rejects(&p, Command::AddMedia { item }), want);
+    }
+}
+
+#[test]
+fn chaptered_media_round_trips_and_single_files_serialise_as_before() {
+    let mut p = Project::new(ProjectId(1));
+    p.apply(Command::AddMedia { item: chaptered(1) }).unwrap();
+    p.apply(Command::AddMedia { item: clip(2, 5) }).unwrap();
+    let json = serde_json::to_string(&p).unwrap();
+    assert_eq!(serde_json::from_str::<Project>(&json).unwrap(), p);
+
+    let value = serde_json::to_value(&p).unwrap();
+    assert_eq!(
+        value["media"][0]["chapters"],
+        serde_json::json!([
+            {"path": "clips/GX010042.MP4", "duration": 10_000_000},
+            {"path": "clips/GX020042.MP4", "duration": 4_000_000},
+        ])
+    );
+    // A single-file item has no `chapters` key at all.
+    assert!(value["media"][1]
+        .as_object()
+        .unwrap()
+        .get("chapters")
+        .is_none());
+}
+
+#[test]
+fn project_without_chapters_field_loads() {
+    let p: Project = serde_json::from_str(PRE_M2_PROJECT).unwrap();
+    assert!(p.media.iter().all(|m| m.chapters.is_empty()));
+}
+
+#[test]
+fn try_map_paths_rewrites_chapter_paths() {
+    let mut p = Project::new(ProjectId(1));
+    p.apply(Command::AddMedia { item: chaptered(1) }).unwrap();
+    p.try_map_paths(|s| Ok::<_, ()>(format!("../{s}"))).unwrap();
+    let item = p.media_item(MediaId(1)).unwrap();
+    assert_eq!(item.path, "../clips/GX010042.MP4");
+    assert_eq!(item.chapters[0].path, "../clips/GX010042.MP4");
+    assert_eq!(item.chapters[1].path, "../clips/GX020042.MP4");
 }
