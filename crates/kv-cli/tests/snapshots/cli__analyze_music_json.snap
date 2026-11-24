@@ -1,0 +1,18 @@
+---
+source: crates/kv-cli/tests/cli.rs
+expression: out
+---
+{
+  "path": "song.wav",
+  "duration": 16000000,
+  "tempo_bpm": 120.1,
+  "beat_count": 32,
+  "downbeat_count": 8,
+  "onset_count": 32,
+  "first_beats": [
+    0,
+    487619,
+    992653,
+    1491882
+  ]
+}
