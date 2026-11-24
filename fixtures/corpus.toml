@@ -1,0 +1,28 @@
+# Regression corpus manifest (ADR 0008, docs/decisions/0008-regression-corpus.md).
+#
+# Each [[file]] is real camera footage stored in Git LFS at
+# fixtures/corpus/<name>. Tests reach it with
+# `kv_testkit::corpus_file_or_skip!("<name>")`, which skips cleanly when the
+# file is not checked out (the merge gate never fetches LFS objects).
+#
+# To add a file (owner only; never proprietary GoPro material such as Quik
+# music or templates, only footage you shot and are happy to keep in a
+# private repo):
+#   1. git lfs install            # once per machine
+#   2. cp GX010042.MP4 fixtures/corpus/hero12-hilights.mp4
+#   3. sha256sum fixtures/corpus/hero12-hilights.mp4
+#   4. add an entry below, commit both, push.
+#
+# Fields: name (file name, no directories), sha256 (lower-case hex),
+# camera (model), codec (codec / profile / resolution / fps), notes (what the
+# file exercises: HiLights, chapters, telemetry, 10-bit, ...).
+#
+# Example:
+# [[file]]
+# name = "hero12-hilights.mp4"
+# sha256 = "<64 lower-case hex digits>"
+# camera = "HERO12 Black"
+# codec = "HEVC Main10, 3840x2160, 59.94 fps"
+# notes = "3 button HiLights, GPMF GPS + ACCL, single chapter"
+
+version = 1

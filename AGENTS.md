@@ -41,6 +41,38 @@ large-data or benchmark tests belong in the full regression
 (`.github/workflows/regression.yml`, manually dispatched): mark them
 `#[ignore = "regression"]`.
 
+## Full regression suite
+
+Slow tests, tests on real footage and benchmarks run only in
+`.github/workflows/regression.yml`, never in the merge gate.
+
+- Mark a slow or corpus test so the gate skips it:
+
+  ```rust
+  #[test]
+  #[ignore = "regression"]
+  fn hilights_on_real_hero12_clip() {
+      let path = kv_testkit::corpus_file_or_skip!("hero12-hilights.mp4");
+      // ...
+  }
+  ```
+
+  Run them locally with `cargo test --workspace -- --include-ignored`.
+- Real footage is listed in `fixtures/corpus.toml` and stored with Git LFS
+  under `fixtures/corpus/` (ADR 0008). `corpus_file_or_skip!` returns early
+  (the test passes with a `SKIPPED:` line) when the file is not checked out,
+  so never fetch the corpus just to make a test run. Clone with
+  `GIT_LFS_SKIP_SMUDGE=1` unless you need it. Only the owner adds footage.
+- Benchmarks are criterion benches (`benches/*.rs`, `harness = false`) and
+  run on macOS arm64 in the `benchmarks` job; results are uploaded as the
+  `criterion-<run id>` artifact.
+- Dispatch: Actions tab > regression > Run workflow, or
+  `gh workflow run regression.yml --ref <branch> -f suite=all`
+  (`suite`: `all`, `platforms`, `performance`, ...). When a job fails, the
+  `report` job files a `status:triage` Task issue with the failing jobs, the
+  run link and a log excerpt (untick `file_issue` to suppress it, e.g. while
+  testing the workflow itself).
+
 ## Picking up an issue
 
 1. Pick the oldest open issue labelled `status:ready` whose "Blocked by" issues
