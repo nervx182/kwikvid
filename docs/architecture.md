@@ -39,7 +39,7 @@ CLI, MCP server) that all drive the engine through the same serialisable
 | kv-gopro | GPMF telemetry, HiLight tags, chaptered file grouping (GH/GX) | none: pure-Rust MP4 box + GPMF KLV reader (ADR 0006) |
 | kv-media | Probe, decode, thumbnails, proxies, export | ffmpeg-next (LGPL build), VideoToolbox |
 | kv-render | Frame plan (pure) + compositing: transitions, speed, titles, preview frames | wgpu |
-| kv-cache | Thumbnail, waveform and analysis cache | rusqlite |
+| kv-cache | Blob cache (thumbnails, probe, HiLights, music analysis) in one SQLite file, keyed by source path+size+mtime, kind and params; LRU prune | rusqlite (bundled) |
 | kv-cli | `kwikvid edit --clips ... --music ... --out ...` | clap |
 | kv-mcp | MCP server | rmcp |
 | kv-app | Desktop shell and UI | Tauri 2 |
