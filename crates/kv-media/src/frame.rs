@@ -96,7 +96,31 @@ impl VideoFrame {
 pub enum VideoCodec {
     /// H.264 / AVC.
     H264,
+    /// H.265 / HEVC (8-bit Main profile). Only encodable where an
+    /// LGPL-compatible encoder exists (VideoToolbox on macOS); check
+    /// [`Encoder::supports`](crate::Encoder::supports).
+    #[serde(rename = "hevc", alias = "Hevc")]
+    Hevc,
 }
+
+/// Largest export width or height in pixels: covers 4K UHD in both
+/// orientations (3840x2160, 2160x3840) and DCI 4K (4096x2160).
+pub const MAX_EXPORT_DIMENSION: u32 = 4096;
+
+/// Pixel count of 1920x1080, the reference size for [`ExportSettings::default_bitrate`].
+const PIXELS_1080P: u64 = 1920 * 1080;
+/// Pixel count of 3840x2160.
+const PIXELS_2160P: u64 = 3840 * 2160;
+/// H.264 bitrate at 1080p (guess: close to what Quik and phone cameras use
+/// for a 1080p30 share export).
+const H264_1080P_BITRATE: u64 = 12_000_000;
+/// H.264 bitrate at 4K UHD (guess).
+const H264_2160P_BITRATE: u64 = 45_000_000;
+/// Lowest default bitrate, so tiny sizes still get a usable stream (guess).
+const MIN_DEFAULT_BITRATE: u64 = 1_000_000;
+/// HEVC bitrate as a percentage of H.264 for similar quality (guess: the
+/// usual 40% saving claimed for HEVC over H.264).
+const HEVC_PERCENT_OF_H264: u64 = 60;
 
 /// Options for exporting an edit to a file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -133,14 +157,48 @@ impl Default for ExportSettings {
 }
 
 impl ExportSettings {
+    /// Default video bitrate in bits per second for a `width x height`
+    /// export with `codec`, at about 30 fps. All numbers are guesses, to be
+    /// tuned against real exports:
+    ///
+    /// - H.264: 12 Mbit/s at 1080p (1920x1080 pixels or fewer scale down
+    ///   with the pixel count, at least 1 Mbit/s) and 45 Mbit/s at 4K
+    ///   (3840x2160), linear in the pixel count between and beyond.
+    /// - HEVC: 60% of the H.264 value.
+    ///
+    /// Only the pixel count matters, so portrait and landscape sizes get the
+    /// same bitrate.
+    pub fn default_bitrate(width: u32, height: u32, codec: VideoCodec) -> u32 {
+        let pixels = u64::from(width) * u64::from(height);
+        let h264 = if pixels <= PIXELS_1080P {
+            (H264_1080P_BITRATE * pixels / PIXELS_1080P).max(MIN_DEFAULT_BITRATE)
+        } else {
+            H264_1080P_BITRATE
+                + (H264_2160P_BITRATE - H264_1080P_BITRATE) * (pixels - PIXELS_1080P)
+                    / (PIXELS_2160P - PIXELS_1080P)
+        };
+        let bitrate = match codec {
+            VideoCodec::H264 => h264,
+            VideoCodec::Hevc => h264 * HEVC_PERCENT_OF_H264 / 100,
+        };
+        u32::try_from(bitrate).unwrap_or(u32::MAX)
+    }
+
     /// Check the settings can be encoded. Rejects a zero or odd width or
-    /// height (H.264 4:2:0 needs even sizes), a zero, negative or undefined
-    /// frame rate, and channel counts outside 1..=2.
+    /// height (4:2:0 needs even sizes), a width or height above
+    /// [`MAX_EXPORT_DIMENSION`], a zero, negative or undefined frame rate,
+    /// and channel counts outside 1..=2. Whether the codec is available on
+    /// this system is [`Encoder::supports`](crate::Encoder::supports)'s job.
     pub fn validate(&self) -> Result<()> {
         let invalid = |msg: String| Err(MediaError::InvalidExportSettings(msg));
         for (name, v) in [("width", self.width), ("height", self.height)] {
             if v == 0 || v % 2 != 0 {
                 return invalid(format!("{name} must be even and non-zero, got {v}"));
+            }
+            if v > MAX_EXPORT_DIMENSION {
+                return invalid(format!(
+                    "{name} must be at most {MAX_EXPORT_DIMENSION}, got {v}"
+                ));
             }
         }
         if self.fps.num <= 0 || self.fps.den <= 0 {
@@ -227,6 +285,81 @@ mod tests {
             ..ExportSettings::default()
         };
         assert_eq!(s.validate(), Ok(()));
+    }
+
+    #[test]
+    fn validate_accepts_4k_in_both_orientations_and_hevc() {
+        for (width, height) in [(3840, 2160), (2160, 3840), (4096, 2160), (4096, 4096)] {
+            for video_codec in [VideoCodec::H264, VideoCodec::Hevc] {
+                let s = ExportSettings {
+                    width,
+                    height,
+                    video_codec,
+                    video_bitrate: ExportSettings::default_bitrate(width, height, video_codec),
+                    ..ExportSettings::default()
+                };
+                assert_eq!(s.validate(), Ok(()), "{s:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn validate_rejects_sizes_above_4096() {
+        let d = ExportSettings::default();
+        for (width, height) in [(4098, 2160), (2160, 4098), (4098, 4098), (7680, 4320)] {
+            let s = ExportSettings {
+                width,
+                height,
+                ..d.clone()
+            };
+            assert!(
+                matches!(s.validate(), Err(MediaError::InvalidExportSettings(_))),
+                "{s:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn default_bitrates() {
+        let br = ExportSettings::default_bitrate;
+        assert_eq!(br(1920, 1080, VideoCodec::H264), 12_000_000);
+        assert_eq!(br(1080, 1920, VideoCodec::H264), 12_000_000);
+        assert_eq!(br(3840, 2160, VideoCodec::H264), 45_000_000);
+        assert_eq!(br(2160, 3840, VideoCodec::H264), 45_000_000);
+        assert_eq!(br(1920, 1080, VideoCodec::Hevc), 7_200_000);
+        assert_eq!(br(3840, 2160, VideoCodec::Hevc), 27_000_000);
+        // Smaller sizes scale down, with a floor.
+        assert_eq!(br(960, 540, VideoCodec::H264), 3_000_000);
+        assert_eq!(br(64, 48, VideoCodec::H264), 1_000_000);
+        // Monotonic in the pixel count, up to the largest valid size.
+        let h264 = br(4096, 4096, VideoCodec::H264);
+        assert!(h264 > 45_000_000 && h264 < 100_000_000, "{h264}");
+        assert!(br(1080, 1080, VideoCodec::H264) < 12_000_000);
+        assert!(br(2560, 1440, VideoCodec::H264) > 12_000_000);
+        // Default settings use the 1080p H.264 default.
+        assert_eq!(
+            ExportSettings::default().video_bitrate,
+            br(1920, 1080, VideoCodec::H264)
+        );
+    }
+
+    #[test]
+    fn hevc_serde_name() {
+        assert_eq!(
+            serde_json::to_string(&VideoCodec::Hevc).unwrap(),
+            "\"hevc\""
+        );
+        assert_eq!(
+            serde_json::from_str::<VideoCodec>("\"hevc\"").unwrap(),
+            VideoCodec::Hevc
+        );
+        let s = ExportSettings {
+            video_codec: VideoCodec::Hevc,
+            ..ExportSettings::default()
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(json.contains("\"video_codec\":\"hevc\""), "{json}");
+        assert_eq!(serde_json::from_str::<ExportSettings>(&json).unwrap(), s);
     }
 
     #[test]
