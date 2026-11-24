@@ -23,8 +23,12 @@ mod frame;
 #[cfg(feature = "ffmpeg")]
 pub use ffmpeg::FfmpegBackend;
 #[cfg(feature = "ffmpeg")]
+mod ffmpeg_encode;
+#[cfg(feature = "ffmpeg")]
 pub use ffmpeg_decode::FfmpegVideoReader;
-pub use frame::{ExportSettings, PixelFormat, VideoCodec, VideoFrame};
+#[cfg(feature = "ffmpeg")]
+pub use ffmpeg_encode::REQUIRE_VIDEOTOOLBOX_ENV;
+pub use frame::{ExportSettings, PixelFormat, VideoCodec, VideoFrame, MAX_EXPORT_DIMENSION};
 
 /// Result alias for this crate.
 pub type Result<T, E = MediaError> = std::result::Result<T, E>;
@@ -52,6 +56,16 @@ pub enum MediaError {
     /// [`ExportSettings::validate`] found settings that cannot be encoded.
     #[error("invalid export settings: {0}")]
     InvalidExportSettings(String),
+
+    /// Writing an export failed: the output could not be created, no
+    /// encoder could be opened, or a frame or sample buffer was rejected.
+    #[error("cannot encode {path:?}: {message}")]
+    Encode { path: PathBuf, message: String },
+
+    /// The requested operation needs an encoder or feature this system does
+    /// not have, e.g. HEVC export without VideoToolbox.
+    #[error("unsupported: {0}")]
+    Unsupported(String),
 
     /// The file opened but holds no video stream.
     #[error("{0:?} has no video stream")]
@@ -239,6 +253,36 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let doy = (153 * mp + 2) / 5 + d - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     era * 146_097 + doe - 719_468
+}
+
+/// Creates [`VideoWriter`]s: the export side of a platform backend.
+pub trait Encoder: Send + Sync {
+    /// Start writing an MP4 at `path`. Calls [`ExportSettings::validate`]
+    /// first. Fails with [`MediaError::Unsupported`], before touching the
+    /// file, when [`supports`](Self::supports) is false for the codec, and
+    /// with [`MediaError::Encode`] when the file cannot be created or no
+    /// encoder is usable.
+    fn create(&self, path: &Path, settings: &ExportSettings) -> Result<Box<dyn VideoWriter>>;
+
+    /// Whether this system can encode `codec`, so a UI can hide the codecs
+    /// [`create`](Self::create) would reject as unsupported.
+    fn supports(&self, codec: VideoCodec) -> bool;
+}
+
+/// One export in progress. Dropping it without [`VideoWriter::finish`]
+/// leaves an incomplete file but never panics.
+pub trait VideoWriter: Send {
+    /// Name of the video encoder in use, e.g. `"h264_videotoolbox"`.
+    fn encoder_name(&self) -> &str;
+    /// Encode the next frame. Frames arrive in order, at exactly the export
+    /// frame rate; the frame's `pts` (rounded to the nearest frame) is used
+    /// as its timestamp and must increase.
+    fn write_video(&mut self, frame: &VideoFrame) -> Result<()>;
+    /// Append interleaved PCM (`audio_channels` samples per frame, nominal
+    /// range -1..=1) in chunks of any size. Audio starts at time 0.
+    fn write_audio(&mut self, interleaved: &[f32]) -> Result<()>;
+    /// Flush the encoders and finalise the file.
+    fn finish(self: Box<Self>) -> Result<()>;
 }
 
 /// How [`MediaBackend::open_video`] converts decoded frames.

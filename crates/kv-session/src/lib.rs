@@ -6,9 +6,12 @@
 //! layer over this crate, so everything here is unit-testable without a
 //! webview. One `Session` per window/project.
 //!
-//! This crate has no platform code. File I/O happens only in background
-//! jobs ([`JobRunner`]), through injected backends and `kv-cache`. Later
-//! modules add regenerate/re-roll, project save/open, import and export.
+//! The crate has no platform code. File I/O happens in project save/open
+//! and the recent projects list ([`Session::save_as`], [`Session::save`],
+//! [`Session::open`], [`RecentProjects`]), and in background jobs
+//! ([`JobRunner`]) through injected backends and `kv-cache`.
+//! Regenerate/re-roll lives in [`regen`]; later modules add import and
+//! export.
 //!
 //! # Paths
 //!
@@ -17,7 +20,8 @@
 //! [`Session::resolve`] convert between host paths and project paths with
 //! pure lexical arithmetic (no `canonicalize`), using `..` for files outside
 //! the root. An untitled project's media root is the user's home directory;
-//! Save As rebases the paths (separate issue).
+//! [`Session::save_as`] rebases the paths onto the project file's folder,
+//! and [`Session::open`] uses the file's folder as the media root.
 //!
 //! # Snapshot JSON
 //!
@@ -33,10 +37,15 @@ mod analysis;
 mod error;
 mod jobs;
 mod paths;
+mod project_file;
+pub mod regen;
 
 pub use analysis::{AudioAnalyzer, MusicAnalyzer};
 pub use error::SessionError;
 pub use jobs::*;
+pub use project_file::{
+    rebase, MissingFile, MissingKind, ProjectFileError, RecentProjects, PROJECT_EXTENSION,
+};
 
 use kv_core::{Command, History, Project, ProjectId};
 use serde::{Deserialize, Serialize};
@@ -71,6 +80,8 @@ pub struct Session {
     saved: Project,
     /// Finished music analyses (see [`Session::music_analysis`]).
     music: analysis::MusicAnalyses,
+    /// The project file, once opened or saved.
+    file: Option<PathBuf>,
 }
 
 impl Session {
@@ -84,6 +95,7 @@ impl Session {
             media_root,
             revision: 0,
             music: Default::default(),
+            file: None,
         }
     }
 
@@ -140,7 +152,7 @@ impl Session {
     }
 
     /// Record the current project as saved, clearing [`Snapshot::dirty`].
-    /// Does not write anything (project files are a separate module).
+    /// Does not write anything (see [`Session::save`]).
     pub fn mark_saved(&mut self) {
         self.saved = self.history.project().clone();
     }

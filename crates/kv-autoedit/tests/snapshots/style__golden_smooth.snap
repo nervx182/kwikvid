@@ -1,0 +1,15 @@
+---
+source: crates/kv-autoedit/tests/style.rs
+expression: "styled_table(&style(&inp, &edl, StylePreset::Smooth))"
+---
+  # | media | src_in  | src_out | start   | length | speed | transition
+----+-------+---------+---------+---------+--------+-------+-----------
+  0 |     1 |   2.598 |   4.973 |   0.000 |  2.375 |   100 | cut
+  1 |     1 |  13.931 |  16.181 |   2.125 |  2.250 |   100 | crossfade 0.250
+  2 |     2 |   0.560 |   2.810 |   4.125 |  2.250 |   100 | crossfade 0.250
+  3 |     2 |   5.708 |   7.958 |   6.125 |  2.250 |   100 | crossfade 0.250
+  4 |     3 |   1.752 |   4.002 |   8.125 |  2.250 |   100 | crossfade 0.250
+  5 |     3 |   6.625 |   8.875 |  10.125 |  2.250 |   100 | crossfade 0.250
+  6 |     3 |   9.725 |  11.475 |  12.125 |  1.750 |   100 | crossfade 0.250
+  7 |     3 |  12.668 |  13.793 |  13.625 |  1.125 |   100 | crossfade 0.250
+total 14.750

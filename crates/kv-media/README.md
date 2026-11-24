@@ -48,10 +48,49 @@ also reports `seek_count()`.
 
 `VideoFrame` is one frame in CPU memory: presentation time (`Micros`), size
 and tightly packed `PixelFormat::Rgba8` bytes (sRGB, straight alpha).
-`ExportSettings` (size, frame rate, `VideoCodec::H264`, bitrate, audio rate
-and channels; serde-serialisable, `validate()` checks it is encodable) is the
-shared vocabulary for decode, encode and the compositor. Both live in
+`ExportSettings` (size, frame rate, `VideoCodec::H264` or `VideoCodec::Hevc`
+(serde `"hevc"`), bitrate, audio rate and channels; serde-serialisable,
+`validate()` checks it is encodable: even sizes up to 4096x4096, which covers
+4K in both orientations) is the shared vocabulary for decode, encode and the
+compositor. `ExportSettings::default_bitrate(w, h, codec)` gives a starting
+bitrate (guesses, scaled by pixel count): H.264 12 Mbit/s at 1080p and
+45 Mbit/s at 3840x2160, HEVC 60% of that. Both live in
 `frame.rs` and need no FFmpeg.
+
+## Export (`Encoder`)
+
+`Encoder::create(path, &ExportSettings)` returns a `VideoWriter` that takes
+RGBA `VideoFrame`s (in order, at exactly the export frame rate; each frame's
+`pts` is its timestamp) and interleaved `f32` PCM in chunks of any size, and
+writes an MP4 with one H.264 or HEVC stream and one AAC stream: BT.709 limited range (tagged
+in the stream), `+faststart` (moov first), both streams starting at 0. AAC
+is FFmpeg's native `aac` encoder at 192 kbit/s; a writer that never gets
+audio produces a video-only MP4. Dropping a writer without `finish()` leaves
+an incomplete file.
+
+`Encoder::supports(codec)` says whether a codec can be encoded here (the UI
+hides the others); `create` returns `MediaError::Unsupported` for the rest
+without touching the file. `VideoWriter::encoder_name()` says which encoder
+was picked:
+
+| Codec | macOS | Linux / Windows |
+| --- | --- | --- |
+| H.264 | `h264_videotoolbox`, else `libopenh264`, else `libx264` (GPL, dev/CI only) | `libopenh264`, else `libx264` (GPL, dev/CI only) |
+| HEVC | `hevc_videotoolbox` (hardware), `hvc1` tag so QuickTime plays it; `Unsupported` when the Mac has no hardware HEVC encoder | `Unsupported("HEVC export needs VideoToolbox")` |
+
+HEVC never falls back to `libx265`: it is GPL, and there is no LGPL software
+HEVC encoder in FFmpeg. HEVC output is 8-bit Main profile.
+
+H.264 encoders are tried in this order:
+
+1. `h264_videotoolbox` (macOS only, hardware). If it cannot be opened (for
+   example a virtualised runner without a hardware encoder) the writer falls
+   back with a `tracing` warning. Set `KV_REQUIRE_VIDEOTOOLBOX=1` to make
+   that an error instead (manual checks on a real Mac; on other systems it
+   always fails).
+2. `libopenh264` (BSD; Cisco's binary is patent-licensed).
+3. `libx264`: **GPL**, logged with a warning. Development and CI only; it
+   must never be the encoder of a shipped build (see Licensing).
 
 ## Backends
 
@@ -76,6 +115,9 @@ The `ffmpeg` feature links the system FFmpeg libraries (`libavformat`,
   to it, put its `bin` on `PATH` and set `LIBCLANG_PATH` to LLVM's `bin`
   (e.g. `C:\Program Files\LLVM\bin`).
 
+Export also needs `libswscale` (`libswscale-dev` on Ubuntu/Debian; part of
+the Homebrew formula).
+
 The tests encode their own 2 s fixture clips with the FFmpeg API, so they need
 an FFmpeg with the `libx264` (or `libopenh264`), `libx265` (10-bit capable)
 and native `aac` encoders. The distribution packages above have them.
@@ -85,5 +127,7 @@ and native `aac` encoders. The distribution packages above have them.
 Per ADR 0005 (`docs/decisions/0005-dependency-licenses.md`) a shipped kwikvid
 must link an **LGPL, dynamically linked FFmpeg built without
 `--enable-gpl`**. The Ubuntu, Homebrew and BtbN `gpl` packages are GPL builds; they are
-acceptable for development and CI only. The Rust bindings (`ffmpeg-next`,
+acceptable for development and CI only. In a shipped LGPL build the export
+path uses VideoToolbox on macOS and `libopenh264` elsewhere; `libx264` is
+not available there, by design. The Rust bindings (`ffmpeg-next`,
 `ffmpeg-sys-next`) are WTFPL, allowed by a scoped exception in `deny.toml`.

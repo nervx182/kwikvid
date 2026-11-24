@@ -10,17 +10,18 @@ publish.workspace = true
 [dependencies]
 kv-audio = { path = "../kv-audio" }
 kv-cache = { path = "../kv-cache" }
+kv-autoedit = { path = "../kv-autoedit" }
 kv-core = { path = "../kv-core" }
 kv-gopro = { path = "../kv-gopro" }
 # No FFmpeg: the media backend is injected (`JobContext::media`).
 kv-media = { path = "../kv-media", default-features = false }
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 kv-testkit = { path = "../kv-testkit" }
-serde_json.workspace = true
 tempfile = "3"
 
 [lints]
