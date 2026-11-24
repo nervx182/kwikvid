@@ -1,0 +1,142 @@
+---
+source: crates/kv-cli/tests/cli.rs
+expression: out
+---
+{
+  "music": {
+    "path": "song.wav",
+    "duration": 16000000,
+    "tempo_bpm": 120.1,
+    "beat_count": 32
+  },
+  "target_length": 10000000,
+  "total_length": 9990385,
+  "project": {
+    "version": 1,
+    "id": 1,
+    "media": [
+      {
+        "id": 1,
+        "path": "clips/a.mp4",
+        "duration": 8000000,
+        "kind": "video",
+        "hilights": [],
+        "clip_audio": false
+      },
+      {
+        "id": 2,
+        "path": "clips/b.mp4",
+        "duration": 6500000,
+        "kind": "video",
+        "hilights": [],
+        "clip_audio": false
+      },
+      {
+        "id": 3,
+        "path": "clips/c.mp4",
+        "duration": 12000000,
+        "kind": "video",
+        "hilights": [],
+        "clip_audio": false
+      }
+    ],
+    "sections": [
+      {
+        "id": 1,
+        "music": {
+          "path": "song.wav",
+          "duration": 16000000
+        },
+        "target_length": {
+          "type": "fixed",
+          "length": 10000000
+        },
+        "pins": [
+          {
+            "media_id": 2,
+            "start": 2000000,
+            "end": 3500000
+          }
+        ],
+        "excludes": [
+          {
+            "media_id": 3,
+            "start": 0,
+            "end": 4000000
+          }
+        ],
+        "seed": 3,
+        "edit": {
+          "segments": [
+            {
+              "media_id": 1,
+              "src_in": 5715672,
+              "src_out": 6708325,
+              "timeline_start": 0,
+              "transition": {
+                "type": "cut"
+              },
+              "speed": 100
+            },
+            {
+              "media_id": 2,
+              "src_in": 432765,
+              "src_out": 1431223,
+              "timeline_start": 992653,
+              "transition": {
+                "type": "cut"
+              },
+              "speed": 100
+            },
+            {
+              "media_id": 2,
+              "src_in": 1751542,
+              "src_out": 3748458,
+              "timeline_start": 1991111,
+              "transition": {
+                "type": "cut"
+              },
+              "speed": 100
+            },
+            {
+              "media_id": 2,
+              "src_in": 4250000,
+              "src_out": 6252721,
+              "timeline_start": 3988027,
+              "transition": {
+                "type": "cut"
+              },
+              "speed": 100
+            },
+            {
+              "media_id": 3,
+              "src_in": 4613612,
+              "src_out": 6610528,
+              "timeline_start": 5990748,
+              "transition": {
+                "type": "cut"
+              },
+              "speed": 100
+            },
+            {
+              "media_id": 3,
+              "src_in": 8786466,
+              "src_out": 10789187,
+              "timeline_start": 7987664,
+              "transition": {
+                "type": "cut"
+              },
+              "speed": 100
+            }
+          ]
+        },
+        "style": "cut",
+        "title": null
+      }
+    ],
+    "settings": {
+      "aspect_ratio": "landscape16x9",
+      "music_volume_percent": 100
+    }
+  }
+}

@@ -5,8 +5,10 @@ CLI, MCP server) that all drive the engine through the same serialisable
 `Command` API.
 
 ```
- kv-app (Tauri 2)     kv-cli              kv-mcp (rmcp; stdio + local HTTP)
-        \               |                   /
+ kv-app (Tauri 2)       kv-cli            kv-mcp (rmcp; stdio + local HTTP)
+        |                 |                 /
+ kv-session (Tauri-free)  |                /
+        \                 |               /
          +-------- kv-core: Command API, project, EDL, undo --------+
                                   |
    Engine (pure Rust, identical on every OS):
@@ -38,11 +40,12 @@ CLI, MCP server) that all drive the engine through the same serialisable
 | kv-audio | Music decode, onset and tempo detection, beat markers | symphonia, rubato, rustfft |
 | kv-gopro | GPMF telemetry, HiLight tags, chaptered file grouping (GH/GX) | none: pure-Rust MP4 box + GPMF KLV reader (ADR 0006) |
 | kv-media | Probe, decode, thumbnails, proxies, export | ffmpeg-next (LGPL build), VideoToolbox |
-| kv-render | GPU compositing, transitions, speed, titles, preview frames | wgpu |
+| kv-render | Frame plan (pure) + compositing: transitions, speed, titles, preview frames | wgpu |
 | kv-cache | Thumbnail, waveform and analysis cache | rusqlite |
 | kv-cli | `kwikvid edit --clips ... --music ... --out ...` | clap |
 | kv-mcp | MCP server | rmcp |
 | kv-app | Desktop shell and UI | Tauri 2 |
+| kv-session | Desktop session: project + history, jobs, regenerate, save/open; Tauri-free, so the gate unit-tests the app logic without a webview | kv-core, serde, tracing |
 | kv-cloud | Camera (Open GoPro) and cloud import, Roadmap I | reqwest |
 | kv-testkit | Fixture generation, golden files, comparisons, regression corpus access (ADR 0008) | hound, toml, sha2, criterion (benches) |
 

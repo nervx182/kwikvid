@@ -137,6 +137,10 @@ pub struct MediaItem {
     pub kind: MediaKind,
     /// HiLight tags, as offsets from the start of the media.
     pub hilights: Vec<Micros>,
+    /// Whether the clip's own audio plays in the edit. Off by default: like
+    /// Quik, clip audio is muted under the music (guess; reversible).
+    #[serde(default)]
+    pub clip_audio: bool,
 }
 
 /// The music track of a section.
@@ -185,6 +189,12 @@ pub struct Section {
     /// Seed for the deterministic auto-edit.
     pub seed: u64,
     pub edit: Edl,
+    /// Look of the edit (transitions and slow motion).
+    #[serde(default)]
+    pub style: StylePreset,
+    /// Optional title card shown at the start of the section.
+    #[serde(default)]
+    pub title: Option<TitleCard>,
 }
 
 impl Section {
@@ -198,8 +208,42 @@ impl Section {
             excludes: Vec::new(),
             seed: 0,
             edit: Edl::default(),
+            style: StylePreset::default(),
+            title: None,
         }
     }
+}
+
+/// Style preset of a section's edit. Applying it to the EDL is the auto-edit's
+/// job; the core only stores the choice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StylePreset {
+    /// Hard cuts.
+    #[default]
+    Cut,
+    /// Crossfades between segments.
+    Smooth,
+    /// Hard cuts plus 2x slow motion on HiLight segments.
+    Action,
+}
+
+/// A title card at the start of a section.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TitleCard {
+    /// 1 to [`TitleCard::MAX_CHARS`] characters, not only whitespace.
+    pub text: String,
+    /// Between [`TitleCard::MIN_DURATION`] and [`TitleCard::MAX_DURATION`].
+    pub duration: Micros,
+}
+
+impl TitleCard {
+    /// Longest title text, in characters (guess).
+    pub const MAX_CHARS: usize = 80;
+    /// Shortest title duration: 0.5 s (guess).
+    pub const MIN_DURATION: Micros = Micros(500_000);
+    /// Longest title duration: 5 s (guess).
+    pub const MAX_DURATION: Micros = Micros(5_000_000);
 }
 
 /// Edit decision list: the ordered segments of a section's edit.
@@ -243,6 +287,10 @@ pub struct Segment {
 }
 
 impl Segment {
+    /// Shortest timeline length a manual tweak may leave a segment with:
+    /// 100 ms (guess).
+    pub const MIN_LEN: Micros = Micros(100_000);
+
     /// Length on the timeline: source length divided by speed.
     pub fn timeline_len(&self) -> Micros {
         let src = i128::from(self.src_out.0 - self.src_in.0);

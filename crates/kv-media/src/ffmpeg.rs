@@ -18,8 +18,8 @@ use ffmpeg_next as ff;
 use kv_core::Micros;
 
 use crate::{
-    parse_creation_time, rotation_from_display_matrix, AudioInfo, MediaBackend, MediaError,
-    MediaInfo, Rational, Result, VideoInfo,
+    parse_creation_time, rotation_from_display_matrix, AudioInfo, DecodeOptions, MediaBackend,
+    MediaError, MediaInfo, Rational, Result, VideoInfo, VideoReader,
 };
 
 /// FFmpeg-based [`MediaBackend`].
@@ -85,6 +85,10 @@ impl MediaBackend for FfmpegBackend {
             creation_time,
         })
     }
+
+    fn open_video(&self, path: &Path, opts: &DecodeOptions) -> Result<Box<dyn VideoReader>> {
+        Ok(Box::new(self.open_video_reader(path, opts)?))
+    }
 }
 
 /// Container duration (already in `AV_TIME_BASE` = microseconds), falling
@@ -108,7 +112,7 @@ fn duration(ictx: &ff::format::context::Input) -> Micros {
     Micros(longest)
 }
 
-fn video_info(stream: &ff::format::stream::Stream) -> Result<VideoInfo, String> {
+pub(crate) fn video_info(stream: &ff::format::stream::Stream) -> Result<VideoInfo, String> {
     let params = stream.parameters();
     let ctx = ff::codec::Context::from_parameters(params.clone()).map_err(|e| e.to_string())?;
     // SAFETY: `ctx` owns a valid AVCodecContext for the duration of the read.
