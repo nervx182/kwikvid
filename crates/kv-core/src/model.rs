@@ -86,6 +86,22 @@ impl Project {
         self.sections.iter().find(|s| s.id == id)
     }
 
+    /// Rewrite every media and music path with `f` (for example to rebase
+    /// them onto another folder). Stops at the first error, leaving the
+    /// paths visited so far rewritten.
+    pub fn try_map_paths<E>(
+        &mut self,
+        mut f: impl FnMut(&str) -> Result<String, E>,
+    ) -> Result<(), E> {
+        for m in &mut self.media {
+            m.path = f(&m.path)?;
+        }
+        for music in self.sections.iter_mut().filter_map(|s| s.music.as_mut()) {
+            music.path = f(&music.path)?;
+        }
+        Ok(())
+    }
+
     /// The smallest media id greater than every id in use; handy for front
     /// ends building an `AddMedia` command.
     pub fn next_media_id(&self) -> MediaId {

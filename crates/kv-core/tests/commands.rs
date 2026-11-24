@@ -1086,3 +1086,43 @@ fn new_fields_round_trip_through_json() {
         r#"{"type":"move_cut","section":1,"cut":2,"to":7}"#
     );
 }
+
+#[test]
+fn history_try_map_paths_rewrites_every_state_without_new_steps() {
+    let music = MusicRef {
+        path: "music/song.mp3".into(),
+        duration: secs(30),
+    };
+    let mut h = History::new(Project::new(ProjectId(1)));
+    h.apply(Command::AddMedia { item: clip(1, 10) }).unwrap();
+    h.apply(Command::SetMusic {
+        section: S,
+        music: Some(music),
+    })
+    .unwrap();
+    h.apply(Command::AddMedia { item: clip(2, 10) }).unwrap();
+    h.undo().unwrap();
+
+    h.try_map_paths(|p| Ok::<_, ()>(format!("../{p}"))).unwrap();
+    assert_eq!(h.project().media[0].path, "../clips/GX01.MP4");
+    assert_eq!(
+        h.project().section(S).unwrap().music.as_ref().unwrap().path,
+        "../music/song.mp3"
+    );
+    // Redo restores a rewritten state and returns the rewritten command.
+    match h.redo().unwrap() {
+        Command::AddMedia { item } => assert_eq!(item.path, "../clips/GX02.MP4"),
+        c => panic!("unexpected {c:?}"),
+    }
+    assert_eq!(h.project().media[1].path, "../clips/GX02.MP4");
+    // Undo the music: the earlier state was rewritten too, and no step was added.
+    h.undo().unwrap();
+    h.undo().unwrap();
+    assert_eq!(h.project().media[0].path, "../clips/GX01.MP4");
+    assert!(h.project().section(S).unwrap().music.is_none());
+    h.undo().unwrap();
+    assert!(!h.can_undo());
+
+    // Errors propagate.
+    assert_eq!(h.try_map_paths(|_| Err("no")), Err("no"));
+}
