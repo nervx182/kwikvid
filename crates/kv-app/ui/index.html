@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>kwikvid</title>
+    <link rel="stylesheet" href="css/app.css" />
+    <link rel="stylesheet" href="css/toast.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="toolbar" data-testid="toolbar">
+        <span class="brand">kwikvid</span>
+        <div class="toolbar-group">
+          <button type="button" id="undo" data-testid="undo" title="Undo (Cmd/Ctrl+Z)" disabled>Undo</button>
+          <button type="button" id="redo" data-testid="redo" title="Redo (Shift+Cmd/Ctrl+Z)" disabled>Redo</button>
+        </div>
+      </header>
+      <aside class="pane library" data-testid="library">
+        <h2>Library</h2>
+        <p class="placeholder" id="library-summary"></p>
+      </aside>
+      <!-- Transparent on purpose: the native preview layer draws underneath (ADR 0007). -->
+      <main class="viewer" data-testid="viewer" aria-label="Viewer"></main>
+      <aside class="pane inspector" data-testid="inspector">
+        <h2>Inspector</h2>
+        <dl id="inspector-summary"></dl>
+      </aside>
+      <section class="pane timeline" data-testid="timeline">
+        <h2>Timeline</h2>
+        <p class="placeholder" id="timeline-summary"></p>
+      </section>
+    </div>
+    <div class="toasts" id="toasts" data-testid="toasts" role="status" aria-live="polite"></div>
+    <script type="module" src="js/main.js"></script>
+  </body>
+</html>
