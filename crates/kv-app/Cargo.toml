@@ -16,8 +16,8 @@ tauri-build = { version = "2.5", features = [] }
 [dependencies]
 anyhow = "1"
 kv-core = { path = "../kv-core" }
-# `VideoFrame` only; no FFmpeg.
-kv-media = { path = "../kv-media", default-features = false }
+# FFmpeg decodes the clips the preview engine plays (transport, #77).
+kv-media = { path = "../kv-media", default-features = false, features = ["ffmpeg"] }
 # Preview compositor, `FrameSink`, `GpuContext` (ADR 0007).
 kv-render = { path = "../kv-render" }
 kv-session = { path = "../kv-session" }

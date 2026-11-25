@@ -43,9 +43,30 @@ export function getBeats(section) {
   return call("get_beats", { section });
 }
 
-/** Move the playhead to `position` (microseconds); resolves to the position used. */
+/**
+ * Transport (src/transport.rs). Each resolves to a TransportStatus:
+ * { position, playing, frame_us } (microseconds). The backend also emits
+ * it as kv://position (~15 Hz) while it changes.
+ */
 export function seek(position) {
   return call("seek", { position });
+}
+
+export function play() {
+  return call("play");
+}
+
+export function pause() {
+  return call("pause");
+}
+
+export function getTransport() {
+  return call("get_transport");
+}
+
+/** Debug overlay: { backend, engine, presented, dropped, seek: { count, last_ms, p50_ms, p95_ms } }. */
+export function getPreviewStats() {
+  return call("get_preview_stats");
 }
 
 /**

@@ -12,8 +12,12 @@
 //   responses  queued one-shot answers: { command, snapshot },
 //              { command, value } or { command, error } (set by
 //              mock.respond() / mock.reply() / mock.fail()).
-//              For get_beats and seek, only { command, error } applies.
+//              For get_beats, seek and the other transport commands,
+//              only { command, error } applies (with delayMs for all).
 //              Either may carry delayMs: the answer arrives that much later.
+//   transport  { position, playing, frame_us }: what play, pause, seek and
+//              get_transport answer; play/pause/seek update it.
+//   stats      what get_preview_stats answers (set via __kvMockInit.stats).
 //   values     standing answers for commands that do not return a
 //              Snapshot: { [command]: value } (set by mock.open(s, { values })).
 //   fire(name, payload)  deliver a backend event to onEvent listeners
@@ -30,6 +34,14 @@ const mock = {
   commands: [],
   responses: [],
   values: init.values ?? {},
+  transport: { position: 0, playing: false, frame_us: 1_000_000 / 30 },
+  stats: init.stats ?? {
+    backend: "off",
+    engine: false,
+    presented: 0,
+    dropped: 0,
+    seek: { count: 0, last_ms: null, p50_ms: null, p95_ms: null },
+  },
   listeners: new Set(),
   eventListeners: [],
 
@@ -55,8 +67,10 @@ function record(command, args) {
 /** A command that returns a value, not a snapshot. */
 function query(command, args, value) {
   const r = record(command, args);
-  if (r && r.error !== undefined) return Promise.reject({ message: r.error });
-  return Promise.resolve(structuredClone(value));
+  return later(r, () => {
+    if (r && r.error !== undefined) return Promise.reject({ message: r.error });
+    return Promise.resolve(structuredClone(typeof value === "function" ? value() : value));
+  });
 }
 
 function later(r, settle) {
@@ -106,7 +120,32 @@ export function getBeats(section) {
 }
 
 export function seek(position) {
-  return query("seek", { position }, Math.max(0, position));
+  return query("seek", { position }, () => {
+    mock.transport.position = Math.max(0, position);
+    return mock.transport;
+  });
+}
+
+export function play() {
+  return query("play", undefined, () => {
+    mock.transport.playing = true;
+    return mock.transport;
+  });
+}
+
+export function pause() {
+  return query("pause", undefined, () => {
+    mock.transport.playing = false;
+    return mock.transport;
+  });
+}
+
+export function getTransport() {
+  return query("get_transport", undefined, () => mock.transport);
+}
+
+export function getPreviewStats() {
+  return query("get_preview_stats", undefined, () => mock.stats);
 }
 
 // The viewer rectangle for the native preview layer; resolves to null like

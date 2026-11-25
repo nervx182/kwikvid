@@ -3,7 +3,8 @@
 //! The UI (plain HTML/CSS/ES modules in `ui/`, no bundler) calls five
 //! commands: `apply`, `undo`, `redo`, `get_state` and `reroll`, plus
 //! per-feature ones registered from their own module (the timeline's
-//! `get_beats` and `seek`). Each forwards to the
+//! `get_beats`; the transport's `play`, `pause`, `seek`, `get_transport`
+//! and `get_preview_stats`, see [`transport`]). Each forwards to the
 //! session (see [`ipc`]); after every change the backend emits a `kv://state`
 //! event with the new snapshot. Errors come back as `{ "message": "..." }`.
 //! Project files (New, Open, Save, Save As, recent) are in [`project`]; the
@@ -16,7 +17,10 @@
 //! Preview (ADR 0007): the UI reports the viewer rectangle with
 //! `set_viewer_rect` and the backend chosen in [`preview::PreviewBackend`]
 //! draws there; on macOS that is the native Metal layer (`native_view`).
-//! `--preview-test-pattern` shows a moving test pattern through it.
+//! `--preview-test-pattern` shows a moving test pattern through it. The
+//! preview engine (kv-render) plays the edit there, driven by the
+//! transport ([`transport`]); without a preview surface (non-macOS until
+//! #76) it still runs, showing nothing, so the transport works.
 
 // Release builds on Windows are GUI apps without a console window.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -29,13 +33,17 @@ mod native_view;
 mod preview;
 mod project;
 mod timeline;
+mod transport;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context as _;
 use ipc::{AppState, IpcError, STATE_EVENT};
 use kv_core::{Command, SectionId};
+use kv_media::MediaBackend;
+use kv_render::preview::{AudioTransport, CpuCompositor};
 use kv_session::regen::RegenSnapshot;
 use kv_session::{Session, Snapshot};
 use preview::{PreviewBackend, PreviewState, ViewerRect};
@@ -45,6 +53,8 @@ use tauri::webview::PageLoadEvent;
 use tauri::{
     AppHandle, Emitter, Listener, Manager, RunEvent, Runtime, State, WebviewWindow, WindowEvent,
 };
+use tracing_subscriber::prelude::*;
+use transport::{SeekLatencies, Transport};
 
 /// How long `--smoke` waits for the first `kv://state` event.
 const SMOKE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -55,6 +65,49 @@ const SMOKE_TIMEOUT: Duration = Duration::from_secs(60);
 fn emit_state<R: Runtime, S: Serialize + Clone>(app: &AppHandle<R>, snapshot: &S) {
     if let Err(e) = app.emit(STATE_EVENT, snapshot) {
         tracing::warn!(error = %e, "could not emit {STATE_EVENT}");
+    }
+    // The preview follows every change (edits keep playing).
+    transport::project_changed(app);
+}
+
+/// What every preview engine is built from: the decoder (none when FFmpeg
+/// failed to start) and the audio output (none without a device).
+struct EngineParts {
+    media: Option<Arc<dyn MediaBackend>>,
+    audio: Option<Arc<AudioTransport>>,
+}
+
+impl EngineParts {
+    fn start() -> EngineParts {
+        let media = match kv_media::FfmpegBackend::new() {
+            Ok(b) => Some(Arc::new(b) as Arc<dyn MediaBackend>),
+            Err(e) => {
+                tracing::warn!("no media backend, preview off: {e}");
+                None
+            }
+        };
+        // The output stream must stay alive (and on this thread, it is not
+        // `Send`) for the app's lifetime, like the native view.
+        let audio = kv_render::preview::audio::start_default_output().map(|(out, t)| {
+            std::mem::forget(out);
+            t
+        });
+        EngineParts { media, audio }
+    }
+
+    /// Engines drawing nowhere: the transport and clock work, nothing is
+    /// shown. Composites at a quarter of the preview size to stay cheap.
+    fn headless(&self) -> Option<transport::EngineFactory> {
+        let media = self.media.clone()?;
+        Some(transport::engine_factory(
+            media,
+            self.audio.clone(),
+            |(w, h)| {
+                let c = CpuCompositor::new((w / 4).max(2), (h / 4).max(2))
+                    .map_err(|e| e.to_string())?;
+                Ok((Box::new(c) as _, Box::new(transport::NullSink) as _))
+            },
+        ))
     }
 }
 
@@ -117,6 +170,9 @@ fn set_viewer_rect(
     let rect = ViewerRect { x, y, w, h, scale }
         .validate()
         .map_err(|message| IpcError { message })?;
+    window
+        .state::<Arc<Transport>>()
+        .set_viewer(rect.physical_size());
     // Only the native backend needs these.
     let _ = (&window, rect);
     match preview.backend() {
@@ -135,6 +191,22 @@ fn set_viewer_rect(
             let native = window.state::<native_view::NativePreview>();
             match native.view(&window, pattern) {
                 Ok(view) => {
+                    let transport = window.state::<Arc<Transport>>();
+                    let parts = window.state::<EngineParts>();
+                    if pattern.is_none() && !transport.has_factory() {
+                        if let Some(media) = parts.media.clone() {
+                            let (gpu, sink) = (view.gpu(), view.sink());
+                            transport.set_factory(transport::engine_factory(
+                                media,
+                                parts.audio.clone(),
+                                move |(w, h)| {
+                                    let c = kv_render::gpu::GpuCompositor::new(&*gpu, w, h)
+                                        .map_err(|e| e.to_string())?;
+                                    Ok((Box::new(c) as _, Box::new(sink.clone()) as _))
+                                },
+                            ));
+                        }
+                    }
                     if let Err(e) = view.set_rect(rect) {
                         tracing::warn!(error = %e, "could not resize the native preview layer");
                     }
@@ -184,11 +256,17 @@ fn media_root<R: Runtime>(app: &AppHandle<R>) -> PathBuf {
 }
 
 fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+    let latencies = Arc::new(SeekLatencies::default());
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(std::io::stderr)
+                .with_filter(
+                    tracing_subscriber::EnvFilter::try_from_default_env()
+                        .unwrap_or_else(|_| "info".into()),
+                ),
         )
+        .with(transport::seek_latency_layer(Arc::clone(&latencies)))
         .init();
     let opts = Options::parse(std::env::args().skip(1));
 
@@ -211,7 +289,11 @@ fn main() -> anyhow::Result<()> {
             reroll,
             set_viewer_rect,
             timeline::get_beats,
-            timeline::seek,
+            transport::play,
+            transport::pause,
+            transport::seek,
+            transport::get_transport,
+            transport::get_preview_stats,
         ])
         .setup(move |app| {
             let root = media_root(app.handle());
@@ -226,6 +308,17 @@ fn main() -> anyhow::Result<()> {
                 tracing::warn!("--preview-test-pattern: no preview backend on this platform yet");
             }
             app.manage(PreviewState::new(backend, opts.preview_test_pattern));
+            let transport = Arc::new(Transport::new(latencies));
+            let parts = EngineParts::start();
+            if backend == PreviewBackend::Off {
+                if let Some(f) = parts.headless() {
+                    transport.set_factory(f);
+                }
+            }
+            app.manage(parts);
+            transport.spawn_worker();
+            transport.spawn_position_events(app.handle().clone());
+            app.manage(transport);
             #[cfg(target_os = "macos")]
             app.manage(native_view::NativePreview::default());
             if opts.smoke {
