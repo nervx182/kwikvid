@@ -1,5 +1,5 @@
 // The only module that touches window.__TAURI__. UI tests replace this file
-// with a mock exporting the same five functions.
+// with a mock (ui-tests/mock-api.js) exporting the same functions.
 //
 // Every function returns a Promise. Failures reject with { message }, a short
 // sentence fit for a toast.
@@ -32,6 +32,20 @@ export function undo() {
 
 export function redo() {
   return call("redo");
+}
+
+/**
+ * The beat grid of a section's music: { music, duration, tempo_bpm, beats,
+ * downbeats } (microseconds), or null while there is no music or its
+ * analysis has not finished.
+ */
+export function getBeats(section) {
+  return call("get_beats", { section });
+}
+
+/** Move the playhead to `position` (microseconds); resolves to the position used. */
+export function seek(position) {
+  return call("seek", { position });
 }
 
 /** The current Snapshot (snake_case keys, see kv-session). */
