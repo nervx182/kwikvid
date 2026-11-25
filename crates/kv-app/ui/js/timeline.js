@@ -81,6 +81,15 @@ export function timeAtClientX(x) {
   return Math.round(frac * Number(content.dataset.span || 0));
 }
 
+/**
+ * The last get_beats answer ({ music, duration, tempo_bpm, beats, downbeats })
+ * for the current music, or null while unknown. "kv:beats" fires on document
+ * when it changes.
+ */
+export function currentBeatGrid() {
+  return state.beats && state.beats.data ? state.beats.data : null;
+}
+
 /** The beat times of the current music, or null while unknown. */
 export function currentBeats() {
   return state.beats && state.beats.data ? state.beats.data.beats : null;
@@ -129,6 +138,7 @@ function refreshBeats(snapshot, sec) {
       if (data && data.music !== music) return;
       state.beats = { music, data: data || null, revision: snapshot.revision };
       draw();
+      document.dispatchEvent(new CustomEvent("kv:beats"));
     })
     .catch(() => {
       if (state.beatsInFlight === key) state.beatsInFlight = null;

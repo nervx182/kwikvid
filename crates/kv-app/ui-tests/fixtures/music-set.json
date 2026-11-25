@@ -1,0 +1,36 @@
+{
+  "revision": 1,
+  "project": {
+    "version": 1,
+    "id": 1,
+    "media": [],
+    "sections": [
+      {
+        "id": 1,
+        "music": {
+          "path": "Music/song.mp3",
+          "duration": 8000000
+        },
+        "target_length": {
+          "type": "full_song"
+        },
+        "pins": [],
+        "excludes": [],
+        "seed": 0,
+        "edit": {
+          "segments": []
+        },
+        "style": "cut",
+        "title": null
+      }
+    ],
+    "settings": {
+      "aspect_ratio": "landscape16x9",
+      "music_volume_percent": 100
+    }
+  },
+  "can_undo": true,
+  "can_redo": false,
+  "dirty": true,
+  "media_root": "/home/ana"
+}
