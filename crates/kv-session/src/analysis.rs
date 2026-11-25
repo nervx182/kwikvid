@@ -54,12 +54,22 @@ impl Session {
     }
 
     /// Feed a job event into the session. A finished
-    /// [`Job::AnalyzeMusic`] is stored for [`Session::music_analysis`];
-    /// every other message is ignored. Returns whether something was stored.
+    /// [`Job::AnalyzeMusic`] is stored for [`Session::music_analysis`], a
+    /// finished [`Job::Filmstrip`] for [`Session::thumbnail`]; every other
+    /// message is ignored. Returns whether something was stored.
     ///
     /// A file whose host path has no project path (another drive, say) is
-    /// ignored, since no `MusicRef` could name it.
+    /// ignored, since no `MusicRef` or media item could name it.
     pub fn handle_job_message(&mut self, msg: &JobMessage) -> bool {
+        if let (
+            Job::Filmstrip { .. },
+            JobEvent::Done {
+                result: JobResult::Filmstrip(thumbs),
+            },
+        ) = (&msg.job, &msg.event)
+        {
+            return self.store_thumbnails(msg.job.path(), thumbs.clone());
+        }
         let (
             Job::AnalyzeMusic(path),
             JobEvent::Done {

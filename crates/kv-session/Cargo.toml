@@ -21,7 +21,12 @@ thiserror.workspace = true
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 
 [dev-dependencies]
-kv-testkit = { path = "../kv-testkit" }
+# `video`: tagged MP4 clips for the FFmpeg import test.
+kv-testkit = { path = "../kv-testkit", features = ["video"] }
+# The real FFmpeg backend, for the import test only.
+kv-media = { path = "../kv-media" }
+# Decodes the stored JPEG thumbnails in the import test.
+image = { version = "0.25.9", default-features = false, features = ["jpeg"] }
 tempfile = "3"
 
 [lints]
