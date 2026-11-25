@@ -4,7 +4,8 @@
 //! [`edit_input`] turns a project section plus its cached music analysis into
 //! a [`kv_autoedit::EditInput`] (pure). The session methods run
 //! [`kv_autoedit::generate`] on it and apply the result with
-//! [`Command::ReplaceEdl`]:
+//! [`Command::ReplaceEdl`], after applying the section's style preset with
+//! [`kv_autoedit::apply_style`]:
 //!
 //! - [`Session::regenerate`]: rebuild the edit from the current constraints.
 //! - [`Session::reroll`]: pick the next seed and rebuild (pins stay covered,
@@ -237,12 +238,21 @@ fn auto_edl(
     Ok(style_pass(edl, sec.style, &input))
 }
 
-/// Apply the section's style preset to a generated edit.
+/// Apply the section's style preset to a plain-cut edit from
+/// [`kv_autoedit::generate`] for `input` (see [`kv_autoedit::style`]).
+/// `StylePreset::Cut` returns the edit unchanged.
 fn style_pass(edl: Edl, style: StylePreset, input: &EditInput) -> Edl {
-    // TODO(#54): when `kv_autoedit::apply_style` lands, apply it here for
-    // every style other than `StylePreset::Cut`.
-    let _ = (style, input);
-    edl
+    if style == StylePreset::Cut {
+        return edl;
+    }
+    kv_autoedit::apply_style(
+        &edl,
+        style,
+        &input.music,
+        &input.media,
+        &input.pins,
+        &input.excludes,
+    )
 }
 
 /// Whether `section`'s edit in `project` holds manual tweaks: it differs from
