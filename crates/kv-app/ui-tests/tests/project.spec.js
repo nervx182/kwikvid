@@ -25,6 +25,7 @@ async function flow(mock) {
     "project_info",
     "set_window_title",
     "get_beats",
+    "bundled_tracks",
     "set_viewer_rect",
     "get_transport",
   ]);

@@ -8,12 +8,13 @@
 // the queued job { id, kind: "music-analysis", state, ... }. The job then
 // reports on kv://job; when it is "done" the backend has already set the
 // music (Command::SetMusic) and emitted kv://state; "failed" carries the
-// message and the music is unchanged. Tempo and beats come from getBeats.
+// message and the music is unchanged. Tempo and beats are the timeline's
+// get_beats answer (currentBeatGrid, "kv:beats"), not fetched twice.
 // Removing sends Command::SetMusic { music: null } through apply.
 
 import * as api from "./api.js";
-import { showToast } from "./toast.js";
 import { formatDuration } from "./library.js";
+import { currentBeatGrid } from "./timeline.js";
 
 /** The beat strip covers this much of the song (microseconds). */
 export const STRIP_SPAN = 30_000_000;
@@ -29,9 +30,6 @@ const state = {
   /** Final music-analysis updates seen before their invoke resolved. */
   early: new Map(),
   error: null,
-  /** The getBeats answer for the current music path, or null. */
-  beats: null,
-  beatsFor: null,
   bundled: [],
 };
 
@@ -107,6 +105,7 @@ export function initMusic(run) {
   document.querySelector("[data-testid=library]").append(panel);
 
   api.onEvent("kv://job", onJob);
+  document.addEventListener("kv:beats", renderCurrent);
   api
     .invoke("bundled_tracks")
     .then((tracks) => {
@@ -178,26 +177,8 @@ function onJob(u) {
   if (FINAL.has(u.state)) {
     state.pending = null;
     if (u.state === "failed") state.error = u.message || `Couldn't analyse "${p.name}".`;
-    if (u.state === "done") fetchBeats(true);
   }
   renderStatus();
-}
-
-async function fetchBeats(force) {
-  const sec = section();
-  const path = sec && sec.music ? sec.music.path : null;
-  if (!force && path === state.beatsFor && state.beats) return;
-  if (path !== state.beatsFor) state.beats = null;
-  state.beatsFor = path;
-  if (!path) return renderCurrent();
-  renderCurrent();
-  try {
-    const b = await api.getBeats(sec.id);
-    if (b && b.music === state.beatsFor) state.beats = b;
-  } catch (e) {
-    showToast(e && e.message ? e.message : String(e));
-  }
-  renderCurrent();
 }
 
 function renderStatus() {
@@ -249,7 +230,8 @@ function renderCurrent() {
   $("music-title").textContent = name;
   $("music-title").title = music.path;
   $("music-duration").textContent = formatDuration(music.duration);
-  const b = state.beats;
+  const grid = currentBeatGrid();
+  const b = grid && grid.music === music.path ? grid : null;
   $("music-tempo").textContent = b ? `${Math.round(b.tempo_bpm)} BPM` : "– BPM";
   const strip = $("music-beats");
   strip.replaceChildren();
@@ -269,5 +251,4 @@ function renderCurrent() {
 export function renderMusic(snapshot) {
   state.snapshot = snapshot;
   renderCurrent();
-  fetchBeats(false);
 }

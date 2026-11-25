@@ -199,7 +199,7 @@ pub fn finish(
     else {
         return None;
     };
-    let set = || -> Result<RegenSnapshot, IpcError> {
+    let mut set = || -> Result<RegenSnapshot, IpcError> {
         let music = MusicRef {
             path: session.to_project_path(path)?,
             duration: analysis.duration,
@@ -553,10 +553,20 @@ source_url = "https://example.com"
             e.message,
             "\"a.ogg\" is not a supported song. Use MP3, AAC, WAV or FLAC."
         );
-        let e = start(&s, &picks, SectionId(9), Path::new("/home/ana/a.mp3"), never).unwrap_err();
+        let e = start(
+            &s,
+            &picks,
+            SectionId(9),
+            Path::new("/home/ana/a.mp3"),
+            never,
+        )
+        .unwrap_err();
         assert_eq!(e.message, "That part of the project no longer exists.");
         let e = start(&s, &picks, S, Path::new("relative.mp3"), never).unwrap_err();
-        assert!(e.message.starts_with("\"relative.mp3\" can't be used"), "{e:?}");
+        assert!(
+            e.message.starts_with("\"relative.mp3\" can't be used"),
+            "{e:?}"
+        );
         // A submit error (no job runner) comes back as is.
         let e = start(&s, &picks, S, Path::new("/home/ana/a.mp3"), |_| {
             Err(IpcError {
