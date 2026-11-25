@@ -9,6 +9,7 @@ import { initTimeline, renderTimeline } from "./timeline.js";
 import { initAutoEdit, renderAutoEdit } from "./autoedit.js";
 import { initViewer } from "./viewer.js";
 import { initLibrary, renderLibrary } from "./library.js";
+import { initInspector, renderInspector } from "./inspector.js";
 import { initTransport, renderTransport } from "./transport.js";
 
 let current = null;
@@ -23,6 +24,7 @@ function render(snapshot) {
   renderTransport(snapshot);
   renderAutoEdit(snapshot);
   renderLibrary(snapshot);
+  renderInspector(snapshot);
   renderSummary(snapshot);
   renderProject(snapshot);
 }
@@ -65,6 +67,7 @@ initTimeline(run);
 initTransport(run);
 initAutoEdit(run, render);
 initLibrary(run);
+initInspector(render);
 initViewer(document.querySelector('[data-testid="viewer"]'), api.setViewerRect);
 api.onState(render);
 run(api.getState());
