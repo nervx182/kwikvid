@@ -1,8 +1,9 @@
 //! kwikvid desktop app: a thin Tauri 2 shell over [`kv_session::Session`].
 //!
-//! The UI (plain HTML/CSS/ES modules in `ui/`, no bundler) calls four
-//! commands: `apply`, `undo`, `redo` and `get_state`, plus per-feature ones
-//! registered from their own module (the timeline's `get_beats` and `seek`). Each forwards to the
+//! The UI (plain HTML/CSS/ES modules in `ui/`, no bundler) calls five
+//! commands: `apply`, `undo`, `redo`, `get_state` and `reroll`, plus
+//! per-feature ones registered from their own module (the timeline's
+//! `get_beats` and `seek`). Each forwards to the
 //! session (see [`ipc`]); after every change the backend emits a `kv://state`
 //! event with the new snapshot. Errors come back as `{ "message": "..." }`.
 //!
@@ -21,8 +22,10 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use ipc::{AppState, IpcError, STATE_EVENT};
-use kv_core::Command;
+use kv_core::{Command, SectionId};
+use kv_session::regen::RegenSnapshot;
 use kv_session::{Session, Snapshot};
+use serde::Serialize;
 use tauri::webview::PageLoadEvent;
 use tauri::{AppHandle, Emitter, Listener, Manager, Runtime, State};
 
@@ -30,16 +33,18 @@ use tauri::{AppHandle, Emitter, Listener, Manager, Runtime, State};
 const SMOKE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Send the new state to every window after a successful change.
-fn emit_state<R: Runtime>(app: &AppHandle<R>, snapshot: &Snapshot) {
+/// `snapshot` is a [`Snapshot`] or a [`RegenSnapshot`] (the same keys plus
+/// `manual_edits_replaced` and `regen_error`).
+fn emit_state<R: Runtime, S: Serialize + Clone>(app: &AppHandle<R>, snapshot: &S) {
     if let Err(e) = app.emit(STATE_EVENT, snapshot) {
         tracing::warn!(error = %e, "could not emit {STATE_EVENT}");
     }
 }
 
-fn changed<R: Runtime>(
+fn changed<R: Runtime, S: Serialize + Clone>(
     app: &AppHandle<R>,
-    result: Result<Snapshot, IpcError>,
-) -> Result<Snapshot, IpcError> {
+    result: Result<S, IpcError>,
+) -> Result<S, IpcError> {
     if let Ok(snapshot) = &result {
         emit_state(app, snapshot);
     }
@@ -47,8 +52,21 @@ fn changed<R: Runtime>(
 }
 
 #[tauri::command]
-fn apply(app: AppHandle, state: State<'_, AppState>, cmd: Command) -> Result<Snapshot, IpcError> {
+fn apply(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    cmd: Command,
+) -> Result<RegenSnapshot, IpcError> {
     changed(&app, ipc::apply(&state, cmd))
+}
+
+#[tauri::command]
+fn reroll(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    section: SectionId,
+) -> Result<RegenSnapshot, IpcError> {
+    changed(&app, ipc::reroll(&state, section))
 }
 
 #[tauri::command]
@@ -109,6 +127,7 @@ fn main() -> anyhow::Result<()> {
             undo,
             redo,
             get_state,
+            reroll,
             timeline::get_beats,
             timeline::seek
         ])

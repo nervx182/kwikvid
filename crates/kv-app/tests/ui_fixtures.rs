@@ -149,6 +149,98 @@ fn timeline_edit() -> Snapshot {
         .expect("edl")
 }
 
+fn fixed(secs: i64) -> Command {
+    Command::SetTargetLength {
+        section: S,
+        target: TargetLength::Fixed {
+            length: Micros(secs * SEC),
+        },
+    }
+}
+
+/// A 40 s song at 120 bpm, analysed.
+fn long_song() -> (MusicRef, MusicAnalysis) {
+    let music = MusicRef {
+        path: "Music/long-song.mp3".into(),
+        duration: Micros(40 * SEC),
+    };
+    let beats: Vec<Micros> = (0..80).map(|i| ms(i * 500)).collect();
+    let analysis = MusicAnalysis {
+        duration: Micros(40 * SEC),
+        tempo_bpm: 120.0,
+        downbeats: beats.iter().step_by(4).copied().collect(),
+        beats,
+        onsets: Vec::new(),
+        energy: vec![0.3; 400],
+    };
+    (music, analysis)
+}
+
+/// The auto-edit control fixtures (`ui/js/autoedit.js`), each a
+/// [`RegenSnapshot`] as the `apply` / `reroll` commands return it:
+///
+/// - `autoedit-ready`: four clips (44 s), the 40 s song analysed, target
+///   set to 15 s; the edit was generated with seed 0.
+/// - `autoedit-rerolled`: `autoedit-ready` re-rolled (seed 1).
+/// - `autoedit-manual-replaced`: `autoedit-ready` with two segments swapped
+///   by hand, then the target set to 30 s: `manual_edits_replaced`.
+/// - `autoedit-pins-too-long`: a 20 s pin, then the target set to 15 s: the
+///   target applies but the edit cannot be rebuilt (`regen_error`).
+fn autoedit_fixtures() -> Vec<(&'static str, String)> {
+    let (music, analysis) = long_song();
+    let mut s = session_with_clips();
+    s.apply(clip(4, "GX010004.MP4", 20)).expect("clip 4");
+    s.apply(Command::SetMusic {
+        section: S,
+        music: Some(music.clone()),
+    })
+    .expect("music");
+    s.set_music_analysis(music.path.clone(), analysis);
+    let base = s.clone();
+    let source = s.analyses();
+
+    let ready = s.apply_and_regenerate(fixed(15), &source).expect("15 s");
+    assert!(
+        ready.regen_error.is_none() && !ready.snapshot.project.sections[0].edit.segments.is_empty()
+    );
+
+    let mut r = s.clone();
+    let rerolled = r.reroll(S, &source).expect("reroll");
+
+    let mut m = s.clone();
+    m.apply(Command::MoveSegment {
+        section: S,
+        from: 0,
+        to: 1,
+    })
+    .expect("manual tweak");
+    let replaced = m.apply_and_regenerate(fixed(30), &source).expect("30 s");
+    assert!(
+        replaced.manual_edits_replaced,
+        "expected manual edits replaced"
+    );
+
+    let mut p = base;
+    p.apply(Command::PinRange {
+        section: S,
+        range: RangeRef {
+            media_id: MediaId(4),
+            start: Micros(0),
+            end: Micros(20 * SEC),
+        },
+    })
+    .expect("pin");
+    let too_long = p.apply_and_regenerate(fixed(15), &source).expect("15 s");
+    assert!(too_long.regen_error.is_some(), "expected a regen error");
+
+    vec![
+        ("autoedit-ready", render(&ready)),
+        ("autoedit-rerolled", render(&rerolled)),
+        ("autoedit-manual-replaced", render(&replaced)),
+        ("autoedit-pins-too-long", render(&too_long)),
+    ]
+}
+
 /// Fixtures that are not a plain [`Snapshot`], rendered.
 fn other_fixtures() -> Vec<(&'static str, String)> {
     // Music set while its analysis is still running: the auto-regenerate
@@ -236,6 +328,7 @@ fn all_fixtures() -> Vec<(&'static str, String)> {
         .map(|(n, s)| (n, render(&s)))
         .collect();
     all.extend(other_fixtures());
+    all.extend(autoedit_fixtures());
     all
 }
 

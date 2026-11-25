@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 use std::error::Error;
 use std::path::Path;
+use std::sync::Arc;
 
 use kv_audio::MusicAnalysis;
 use kv_core::MusicRef;
@@ -38,19 +39,28 @@ impl MusicAnalyzer for AudioAnalyzer {
 
 /// Finished music analyses, keyed by project path (`MusicRef::path`).
 #[derive(Debug, Clone, Default)]
-pub(crate) struct MusicAnalyses(HashMap<String, MusicAnalysis>);
+pub(crate) struct MusicAnalyses(HashMap<String, Arc<MusicAnalysis>>);
 
 impl Session {
     /// The analysis of a music track, if a finished job delivered one (see
     /// [`Session::handle_job_message`]).
     pub fn music_analysis(&self, music: &MusicRef) -> Option<&MusicAnalysis> {
-        self.music.0.get(&music.path)
+        self.music.0.get(&music.path).map(|a| &**a)
     }
 
     /// Store the analysis of the music file at `project_path` (a project
     /// path, see [`Session::to_project_path`]), replacing any previous one.
     pub fn set_music_analysis(&mut self, project_path: String, analysis: MusicAnalysis) {
-        self.music.0.insert(project_path, analysis);
+        self.music.0.insert(project_path, Arc::new(analysis));
+    }
+
+    /// Every finished analysis, keyed by project path, as an
+    /// [`AnalysisSource`](crate::regen::AnalysisSource) detached from the
+    /// session. Cheap (the analyses are shared, not copied). Pass it to
+    /// [`Session::regenerate`], [`Session::reroll`] or
+    /// [`Session::apply_and_regenerate`], which borrow the session mutably.
+    pub fn analyses(&self) -> HashMap<String, Arc<MusicAnalysis>> {
+        self.music.0.clone()
     }
 
     /// Feed a job event into the session. A finished

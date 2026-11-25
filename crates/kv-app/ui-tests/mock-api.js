@@ -12,6 +12,7 @@
 //   responses  queued one-shot answers: { command, snapshot } or
 //              { command, error } (set by mock.respond() / mock.fail()).
 //              For get_beats and seek, only { command, error } applies.
+//              Either may carry delayMs: the answer arrives that much later.
 //
 // Keep it plain: no imports, no Tauri, nothing a feature would need to edit.
 // Features test new commands through apply() and the queues above.
@@ -46,16 +47,23 @@ function query(command, args, value) {
   return Promise.resolve(structuredClone(value));
 }
 
+function later(r, settle) {
+  const ms = (r && r.delayMs) || 0;
+  return ms > 0 ? new Promise((res) => setTimeout(res, ms)).then(settle) : settle();
+}
+
 function call(command, args) {
   const r = record(command, args);
-  if (r) {
-    if (r.error !== undefined) return Promise.reject({ message: r.error });
-    mock.state = r.snapshot;
-  }
-  if (mock.state === null) {
-    return Promise.reject({ message: `mock-api: no state set (call mock.open(snapshot))` });
-  }
-  return Promise.resolve(structuredClone(mock.state));
+  return later(r, () => {
+    if (r) {
+      if (r.error !== undefined) return Promise.reject({ message: r.error });
+      mock.state = r.snapshot;
+    }
+    if (mock.state === null) {
+      return Promise.reject({ message: `mock-api: no state set (call mock.open(snapshot))` });
+    }
+    return Promise.resolve(structuredClone(mock.state));
+  });
 }
 
 export function apply(cmd) {
@@ -68,6 +76,10 @@ export function undo() {
 
 export function redo() {
   return call("redo");
+}
+
+export function reroll(section) {
+  return call("reroll", { section });
 }
 
 export function getState() {
