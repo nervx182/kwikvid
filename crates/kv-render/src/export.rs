@@ -14,22 +14,31 @@
 //!    lazily, one per media item, decoded upright at [`source_size_for`] the
 //!    output, and kept in a small LRU ([`MAX_OPEN_READERS`]). Each reader
 //!    remembers its last [`FRAMES_KEPT`] frames by source time, so the frame
-//!    shared by consecutive slow-mo blends is decoded once.
-//! 3. After each video frame, write the music samples up to that frame's end
-//!    so audio and video stay interleaved for the muxer.
+//!    shared by consecutive slow-mo blends is decoded once. A section title
+//!    is rasterised once at the output size ([`title::rasterize`]) and
+//!    alpha-blended over the frames the plan gives it an overlay on
+//!    ([`overlay()`]).
+//! 3. After each video frame, write the audio samples up to that frame's end
+//!    so audio and video stay interleaved for the muxer. The audio is the
+//!    music bed with the clip audio of every media item that has it on
+//!    mixed under it ([`kv_audio::render_clip_audio`],
+//!    [`kv_audio::mix_under_music`]).
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use kv_audio::{render_music_bed, MusicBedOptions, DEFAULT_FADE_OUT};
+use kv_audio::{
+    mix_under_music, render_clip_audio, render_music_bed, ClipAudioOptions, ClipAudioSource,
+    MusicBedOptions, PcmAudio, DEFAULT_FADE_OUT,
+};
 use kv_core::{MediaId, Micros, Project, SectionId};
 use kv_media::{
     DecodeOptions, Encoder, ExportSettings, MediaBackend, MediaError, Rational, VideoFrame,
     VideoReader, VideoWriter,
 };
 
-use crate::{composite, frame_pts, plan, segment_end, source_size_for, CompositeError, Fit};
-use crate::{OutputFrame, PlanError};
+use crate::{composite, frame_pts, overlay, plan, segment_end, source_size_for};
+use crate::{title, CompositeError, Fit, OutputFrame, OverlayId, PlanError};
 
 /// Most video readers kept open at once; the least recently used one is
 /// closed when another is needed (guess: 4 covers a crossfade plus the next
@@ -100,6 +109,9 @@ pub enum RenderError {
         #[source]
         source: kv_audio::Error,
     },
+    /// A clip's audio could not be decoded.
+    #[error(transparent)]
+    ClipAudio(kv_audio::Error),
     /// Invalid settings, or the encoder failed.
     #[error(transparent)]
     Media(#[from] MediaError),
@@ -119,10 +131,13 @@ pub enum RenderError {
 /// rendered with [`render_music_bed`] for the length of the edit at
 /// `settings.audio_sample_rate` / `audio_channels`, with the project's
 /// music volume and a [`MUSIC_FADE_OUT`] fade; without music the track is
-/// silent (guess: players handle that better than no audio track).
+/// silent (guess: players handle that better than no audio track). The
+/// clip audio of media items with `clip_audio` on is mixed under the music
+/// at full level, through a limiter ([`kv_audio::mix_under_music`]).
 ///
 /// `progress` is called after every frame. Every check that does not need
-/// the output (missing media, empty edit, bad settings, unreadable music)
+/// the output (missing media, empty edit, bad settings, unreadable music
+/// or clip audio)
 /// fails before `out` is created. If writing fails part-way, the partial
 /// file is removed (best effort).
 #[allow(clippy::too_many_arguments)]
@@ -185,7 +200,11 @@ pub fn export(
     }
 
     let source_fps = |id: MediaId| sources.iter().find(|s| s.media_id == id).map(|s| s.fps);
-    let frame_plan = plan(edl, settings.fps, &source_fps)?;
+    let frame_plan = plan(edl, settings.fps, &source_fps)?.with_title(sec.title.as_ref());
+    let title = sec
+        .title
+        .as_ref()
+        .map(|t| title::rasterize(t, settings.width, settings.height));
 
     // Audio, rendered up front so a bad music file fails before the output
     // exists.
@@ -200,15 +219,18 @@ pub fn export(
             );
             opts.volume_percent = project.settings.music_volume_percent;
             opts.fade_out = MUSIC_FADE_OUT;
-            render_music_bed(&path, &opts)
-                .map_err(|source| RenderError::Music { path, source })?
-                .samples
+            render_music_bed(&path, &opts).map_err(|source| RenderError::Music { path, source })?
         }
         None => {
             let frames = audio_frames_at(duration, settings.audio_sample_rate);
-            vec![0.0; frames * usize::from(settings.audio_channels)]
+            PcmAudio {
+                samples: vec![0.0; frames * usize::from(settings.audio_channels)],
+                sample_rate: settings.audio_sample_rate,
+                channels: settings.audio_channels,
+            }
         }
     };
+    let audio = mix_clip_audio(project, edl, &sources, audio, duration)?.samples;
 
     let writer = encoder.create(out, settings)?;
     let mut job = Job {
@@ -216,6 +238,7 @@ pub fn export(
         media,
         readers: Vec::new(),
         settings,
+        title,
     };
     match job.write_all(writer, &frame_plan, &audio, progress) {
         Ok(encoder_name) => Ok(ExportReport {
@@ -232,6 +255,35 @@ pub fn export(
             Err(e)
         }
     }
+}
+
+/// `bed` with the clip audio of the edit's media that have `clip_audio` on
+/// mixed under it; `bed` unchanged when none has.
+fn mix_clip_audio(
+    project: &Project,
+    edl: &kv_core::Edl,
+    sources: &[Source],
+    bed: PcmAudio,
+    duration: Micros,
+) -> Result<PcmAudio, RenderError> {
+    let clip_sources: Vec<ClipAudioSource> = sources
+        .iter()
+        .filter(|s| project.media_item(s.media_id).is_some_and(|m| m.clip_audio))
+        .map(|s| ClipAudioSource {
+            media_id: s.media_id,
+            path: s.path.clone(),
+        })
+        .collect();
+    if clip_sources.is_empty() {
+        return Ok(bed);
+    }
+    let opts = ClipAudioOptions {
+        sample_rate: bed.sample_rate,
+        channels: bed.channels,
+        length: duration,
+    };
+    let clip = render_clip_audio(edl, &clip_sources, &opts).map_err(RenderError::ClipAudio)?;
+    mix_under_music(&bed, &clip).map_err(RenderError::ClipAudio)
 }
 
 /// `root / rel`, where `rel` is `/`-separated (an absolute `rel` wins).
@@ -267,6 +319,8 @@ struct Job<'a> {
     /// Open readers, most recently used last.
     readers: Vec<OpenReader>,
     settings: &'a ExportSettings,
+    /// The section's title card at the output size, if it has one.
+    title: Option<VideoFrame>,
 }
 
 struct OpenReader {
@@ -323,6 +377,14 @@ impl Job<'_> {
         let layers: Vec<(&VideoFrame, f32)> = decoded.iter().map(|(f, w)| (f, *w)).collect();
         out.pts = frame.pts;
         composite(&layers, out, Fit::Fill)?;
+        for o in &frame.overlays {
+            let image = match o.id {
+                OverlayId::Title => self.title.as_ref(),
+            };
+            if let Some(image) = image {
+                overlay(out, image, o.opacity)?;
+            }
+        }
         Ok(())
     }
 
@@ -504,9 +566,11 @@ mod tests {
     struct FakeEncoder {
         calls: Arc<Mutex<Vec<Call>>>,
         created: Arc<AtomicUsize>,
+        /// Every video frame written, in order.
+        frames: Arc<Mutex<Vec<VideoFrame>>>,
     }
 
-    struct FakeWriter(Arc<Mutex<Vec<Call>>>);
+    struct FakeWriter(Arc<Mutex<Vec<Call>>>, Arc<Mutex<Vec<VideoFrame>>>);
 
     impl Encoder for FakeEncoder {
         fn create(
@@ -516,7 +580,10 @@ mod tests {
         ) -> kv_media::Result<Box<dyn VideoWriter>> {
             settings.validate()?;
             self.created.fetch_add(1, Ordering::SeqCst);
-            Ok(Box::new(FakeWriter(self.calls.clone())))
+            Ok(Box::new(FakeWriter(
+                self.calls.clone(),
+                self.frames.clone(),
+            )))
         }
 
         fn supports(&self, _: kv_media::VideoCodec) -> bool {
@@ -533,6 +600,7 @@ mod tests {
                 pts: f.pts,
                 level: f.data[0],
             });
+            self.1.lock().unwrap().push(f.clone());
             Ok(())
         }
         fn write_audio(&mut self, s: &[f32]) -> kv_media::Result<()> {
@@ -705,6 +773,62 @@ mod tests {
     }
 
     #[test]
+    fn title_is_drawn_over_the_first_frames_only() {
+        // Two 1 s cuts of dark grey footage at 10 fps, 320x180, a 1 s title.
+        let mut p = project(2, &[1, 2]);
+        p.sections[0].title = Some(kv_core::TitleCard {
+            text: "Summer".into(),
+            duration: Micros(1_000_000),
+        });
+        let s = ExportSettings {
+            width: 320,
+            height: 180,
+            ..settings()
+        };
+        let (media, enc) = (FakeMedia::default(), FakeEncoder::default());
+        let report = export(
+            &p,
+            Project::DEFAULT_SECTION,
+            Path::new("/root"),
+            &media,
+            &enc,
+            Path::new("/nonexistent/out.mp4"),
+            &s,
+            &mut |_| {},
+        )
+        .unwrap();
+        assert_eq!(report.frames, 20);
+        let frames = enc.frames.lock().unwrap();
+        // Bright pixels in the central band (text), per frame.
+        let bright = |f: &VideoFrame| {
+            let mut n = 0;
+            for y in 60..120usize {
+                for x in 32..288usize {
+                    let i = (y * 320 + x) * 4;
+                    if f.data[i..i + 3].iter().all(|&c| c > 200) {
+                        n += 1;
+                    }
+                }
+            }
+            n
+        };
+        let counts: Vec<usize> = frames.iter().map(bright).collect();
+        // Frame 0: opacity 0. Frames 3..=7: fully shown. From 1 s: none.
+        assert_eq!(counts[0], 0, "{counts:?}");
+        assert!(counts[3..=7].iter().all(|&n| n > 40), "{counts:?}");
+        assert!(counts[10..].iter().all(|&n| n == 0), "{counts:?}");
+        // Corners keep the footage (grey 10, then 20) throughout.
+        for (k, f) in frames.iter().enumerate() {
+            let level = if k < 10 { 10 } else { 20 };
+            assert_eq!(f.data[..4], [level, level, level, 255], "frame {k}");
+        }
+        // After the title the frames are untouched footage.
+        assert!(frames[10..]
+            .iter()
+            .all(|f| f.data.chunks_exact(4).all(|px| px == [20, 20, 20, 255])));
+    }
+
+    #[test]
     fn errors_before_the_output_is_created() {
         let enc = FakeEncoder::default();
         let media = FakeMedia::default();
@@ -745,6 +869,17 @@ mod tests {
             run(&music, &media, &enc, &mut Vec::new()),
             Err(RenderError::Music { .. })
         ));
+
+        // Clip audio on: the fake paths do not exist, so decoding fails.
+        let mut clip_audio = project(2, &[1, 2]);
+        clip_audio.media[1].clip_audio = true;
+        match run(&clip_audio, &media, &enc, &mut Vec::new()) {
+            Err(RenderError::ClipAudio(kv_audio::Error::ClipSource { media_id, path, .. })) => {
+                assert_eq!(media_id, MediaId(2));
+                assert_eq!(path, Path::new("/root/clips/clip2.mp4"));
+            }
+            other => panic!("{other:?}"),
+        }
 
         let p = project(1, &[1]);
         assert!(matches!(

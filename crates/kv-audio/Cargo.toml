@@ -19,4 +19,5 @@ workspace = true
 
 [dev-dependencies]
 hound.workspace = true
-kv-testkit = { path = "../kv-testkit" }
+# `video`: MP4 clips with an AAC tone track for the clip audio tests.
+kv-testkit = { path = "../kv-testkit", features = ["video"] }
