@@ -1,0 +1,156 @@
+{
+  "revision": 8,
+  "project": {
+    "version": 1,
+    "id": 1,
+    "media": [
+      {
+        "id": 1,
+        "path": "DCIM/100GOPRO/GX010001.MP4",
+        "duration": 10000000,
+        "kind": "video",
+        "hilights": [],
+        "clip_audio": false
+      },
+      {
+        "id": 2,
+        "path": "DCIM/100GOPRO/GX010002.MP4",
+        "duration": 6000000,
+        "kind": "video",
+        "hilights": [],
+        "clip_audio": false
+      },
+      {
+        "id": 3,
+        "path": "DCIM/100GOPRO/GX010003.MP4",
+        "duration": 8000000,
+        "kind": "video",
+        "hilights": [],
+        "clip_audio": false
+      },
+      {
+        "id": 4,
+        "path": "DCIM/100GOPRO/GX010004.MP4",
+        "duration": 20000000,
+        "kind": "video",
+        "hilights": [],
+        "clip_audio": false
+      }
+    ],
+    "sections": [
+      {
+        "id": 1,
+        "music": {
+          "path": "Music/long-song.mp3",
+          "duration": 40000000
+        },
+        "target_length": {
+          "type": "fixed",
+          "length": 15000000
+        },
+        "pins": [],
+        "excludes": [],
+        "seed": 0,
+        "edit": {
+          "segments": [
+            {
+              "media_id": 1,
+              "src_in": 1568473,
+              "src_out": 3568473,
+              "timeline_start": 0,
+              "transition": {
+                "type": "cut"
+              },
+              "speed": 100
+            },
+            {
+              "media_id": 1,
+              "src_in": 6029119,
+              "src_out": 8029119,
+              "timeline_start": 2000000,
+              "transition": {
+                "type": "cut"
+              },
+              "speed": 100
+            },
+            {
+              "media_id": 2,
+              "src_in": 2172675,
+              "src_out": 4172675,
+              "timeline_start": 4000000,
+              "transition": {
+                "type": "cut"
+              },
+              "speed": 100
+            },
+            {
+              "media_id": 3,
+              "src_in": 728454,
+              "src_out": 2728454,
+              "timeline_start": 6000000,
+              "transition": {
+                "type": "cut"
+              },
+              "speed": 100
+            },
+            {
+              "media_id": 3,
+              "src_in": 4547970,
+              "src_out": 6547970,
+              "timeline_start": 8000000,
+              "transition": {
+                "type": "cut"
+              },
+              "speed": 100
+            },
+            {
+              "media_id": 4,
+              "src_in": 4944833,
+              "src_out": 6944833,
+              "timeline_start": 10000000,
+              "transition": {
+                "type": "cut"
+              },
+              "speed": 100
+            },
+            {
+              "media_id": 4,
+              "src_in": 8981518,
+              "src_out": 10981518,
+              "timeline_start": 12000000,
+              "transition": {
+                "type": "cut"
+              },
+              "speed": 100
+            },
+            {
+              "media_id": 4,
+              "src_in": 13367561,
+              "src_out": 14367561,
+              "timeline_start": 14000000,
+              "transition": {
+                "type": "cut"
+              },
+              "speed": 100
+            }
+          ]
+        },
+        "style": "smooth",
+        "title": {
+          "text": "Lake day",
+          "duration": 3000000
+        }
+      }
+    ],
+    "settings": {
+      "aspect_ratio": "landscape16x9",
+      "music_volume_percent": 100
+    }
+  },
+  "can_undo": true,
+  "can_redo": false,
+  "dirty": true,
+  "media_root": "/home/ana",
+  "manual_edits_replaced": false,
+  "regen_error": null
+}
