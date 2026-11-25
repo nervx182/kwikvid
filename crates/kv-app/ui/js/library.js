@@ -11,6 +11,10 @@
 // thumbnails are kvthumb://<media_id>/<index> images, 404 until the job is
 // "done". Removing sends Command::RemoveMedia through apply.
 //
+// "Exclude clip" in the context menu sends Command::ExcludeRange over the
+// whole clip (0..duration); such clips are dimmed (data-excluded) and the
+// menu offers "Include clip" (UnexcludeRange) instead.
+//
 // Other components follow the selection through the "kv:media-selected"
 // document event ({ detail: { mediaId } }, null when nothing is selected)
 // or selectedMedia().
@@ -24,6 +28,9 @@ export const SELECT_EVENT = "kv:media-selected";
 const state = {
   run: null,
   selected: null,
+  /** The first section's id and its whole-clip excludes (media id -> range). */
+  section: null,
+  excludedClips: new Map(),
   /** media id -> Set of unfinished filmstrip job ids. */
   jobs: new Map(),
   /** media id -> failure message of its last filmstrip job. */
@@ -169,10 +176,37 @@ function openMenu(mediaId, x, y) {
   const item = button("library-remove", "Remove from Library", "", () => remove(mediaId));
   item.removeAttribute("title");
   item.setAttribute("role", "menuitem");
-  menu.append(item);
+  menu.append(excludeItem(mediaId), item);
   menu.style.left = `${x}px`;
   menu.style.top = `${y}px`;
   document.body.append(menu);
+}
+
+/** "Exclude clip" (ExcludeRange 0..duration), or "Include clip" when excluded. */
+function excludeItem(mediaId) {
+  const whole = state.excludedClips.get(mediaId);
+  const row = state.rows.get(mediaId);
+  const duration = row ? Number(row.dataset.duration) : 0;
+  const b = whole
+    ? button("library-include-clip", "Include clip", "", () =>
+        constrain({ type: "unexclude_range", section: state.section, range: whole }),
+      )
+    : button("library-exclude-clip", "Exclude clip", "", () =>
+        constrain({
+          type: "exclude_range",
+          section: state.section,
+          range: { media_id: mediaId, start: 0, end: duration },
+        }),
+      );
+  b.removeAttribute("title");
+  b.setAttribute("role", "menuitem");
+  b.disabled = state.section === null;
+  return b;
+}
+
+function constrain(cmd) {
+  closeMenu();
+  state.run(api.apply(cmd));
 }
 
 function closeMenu() {
@@ -248,6 +282,8 @@ function updateRow(row, item) {
   const chapters = item.chapters ? item.chapters.length : 0;
   row.title = chapters > 1 ? `${name} (${chapters} chapters)` : name;
   row.querySelector(".lib-duration").textContent = formatDuration(item.duration);
+  row.dataset.duration = String(item.duration);
+  row.dataset.excluded = String(state.excludedClips.has(item.id));
   const strip = row.querySelector(".lib-strip");
   for (const t of strip.querySelectorAll(".lib-hilight")) t.remove();
   for (const h of item.hilights) {
@@ -301,6 +337,13 @@ function renderSkipped() {
 
 export function renderLibrary(snapshot) {
   const media = snapshot.project.media;
+  const section = snapshot.project.sections[0];
+  state.section = section ? section.id : null;
+  state.excludedClips = new Map();
+  const durations = new Map(media.map((m) => [m.id, m.duration]));
+  for (const r of section ? section.excludes : []) {
+    if (r.start <= 0 && r.end >= durations.get(r.media_id)) state.excludedClips.set(r.media_id, r);
+  }
   const ids = new Set(media.map((m) => m.id));
   for (const [id, row] of state.rows) {
     if (!ids.has(id)) {

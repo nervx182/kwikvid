@@ -51,3 +51,5 @@
 }
 .lib-menu button { display: block; width: 100%; text-align: left; border: 0; background: transparent; }
 .lib-menu button:hover { background: var(--accent); }
+.lib-item[data-excluded="true"] { opacity: 0.45; }
+.lib-item[data-excluded="true"] .lib-strip { filter: grayscale(1); }
