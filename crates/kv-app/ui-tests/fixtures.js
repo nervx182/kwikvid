@@ -34,11 +34,15 @@ class Mock {
     this.page = page;
   }
 
-  /** Load the UI with `snapshot` as the backend state (default: initial). */
-  async open(snapshot = snapshots.initial) {
-    await this.page.addInitScript((state) => {
-      window.__kvMockInit = { state };
-    }, snapshot);
+  /**
+   * Load the UI with `snapshot` as the backend state (default: initial).
+   * `values` gives standing answers for commands that do not return a
+   * Snapshot, e.g. { project_info: { snapshot, file: null, missing: [] } }.
+   */
+  async open(snapshot = snapshots.initial, { values = {} } = {}) {
+    await this.page.addInitScript((init) => {
+      window.__kvMockInit = init;
+    }, { state: snapshot, values });
     await this.page.goto("/");
     // Fails fast if the real api.js was served instead of the mock.
     await this.page.waitForFunction(() => window.__kvMock !== undefined);
@@ -51,7 +55,8 @@ class Mock {
 
   /**
    * The calls the UI made, in order, as { command, args? }; command is
-   * "apply", "undo", "redo" or "get_state". Pass a name to filter.
+   * "apply", "undo", "redo", "get_state" or an invoke() name. Pass a name
+   * to filter.
    */
   async commands(name) {
     const all = await this.page.evaluate(() => window.__kvMock.commands);
@@ -61,6 +66,16 @@ class Mock {
   /** The next `command` call resolves to `snapshot` (it becomes the state). */
   async respond(command, snapshot) {
     await this.page.evaluate((r) => window.__kvMock.responses.push(r), { command, snapshot });
+  }
+
+  /** The next `command` call resolves to `value`; the state is unchanged. */
+  async reply(command, value) {
+    await this.page.evaluate((r) => window.__kvMock.responses.push(r), { command, value });
+  }
+
+  /** Deliver backend event `name` (e.g. "kv://menu") with `payload`. */
+  async event(name, payload) {
+    await this.page.evaluate(([n, p]) => window.__kvMock.fire(n, p), [name, payload]);
   }
 
   /** The next `command` call rejects with { message }. */

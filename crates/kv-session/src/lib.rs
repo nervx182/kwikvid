@@ -142,6 +142,13 @@ impl Session {
         Ok(self.snapshot())
     }
 
+    /// Continue the revision numbering of a session this one replaces (New
+    /// or Open in the same window): the revision becomes `previous + 1`, so
+    /// the UI's stale-snapshot check never drops the replacement's state.
+    pub fn continue_revisions(&mut self, previous: u64) {
+        self.revision = previous.saturating_add(1);
+    }
+
     /// Record the current project as saved, clearing [`Snapshot::dirty`].
     /// Does not write anything (see [`Session::save`]).
     pub fn mark_saved(&mut self) {

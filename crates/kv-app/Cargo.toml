@@ -20,11 +20,13 @@ kv-session = { path = "../kv-session" }
 serde.workspace = true
 # macos-private-api: transparent webview over the native preview layer (ADR 0007).
 tauri = { version = "2.12", features = ["macos-private-api"] }
+tauri-plugin-dialog = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "ansi"] }
 
 [dev-dependencies]
 serde_json.workspace = true
+tempfile = "3"
 
 [lints]
 workspace = true

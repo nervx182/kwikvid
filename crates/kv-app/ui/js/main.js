@@ -4,6 +4,7 @@
 import * as api from "./api.js";
 import { showToast } from "./toast.js";
 import { initToolbar, renderToolbar } from "./toolbar.js";
+import { initProject, renderProject } from "./project.js";
 
 let current = null;
 
@@ -14,6 +15,7 @@ function render(snapshot) {
   current = snapshot;
   renderToolbar(snapshot);
   renderSummary(snapshot);
+  renderProject(snapshot);
 }
 
 function renderSummary(s) {
@@ -49,6 +51,7 @@ async function run(promise) {
 }
 
 initToolbar(run);
+initProject(render);
 api.onState(render);
 run(api.getState());
 

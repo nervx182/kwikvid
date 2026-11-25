@@ -15,7 +15,7 @@
 
 use std::path::{Path, PathBuf};
 
-use kv_core::{Command, Project};
+use kv_core::{Command, MediaId, MediaItem, MediaKind, Micros, Project};
 use kv_session::{Session, Snapshot};
 
 /// A fixed media root so the fixtures do not depend on the machine.
@@ -31,6 +31,24 @@ fn set_seed(seed: u64) -> Command {
         seed,
     }
 }
+
+fn clip(id: u64, path: &str) -> Command {
+    Command::AddMedia {
+        item: MediaItem {
+            id: MediaId(id),
+            path: path.into(),
+            duration: Micros(12_000_000),
+            kind: MediaKind::Video,
+            hilights: vec![],
+            clip_audio: false,
+            chapters: vec![],
+        },
+    }
+}
+
+/// Where the project-file fixtures pretend to live (the real files are
+/// written to a temporary folder).
+const PROJECT_DIR: &str = "/home/ana/Movies/trip";
 
 /// Every fixture: file name (without `.json`) and the snapshot it holds.
 fn fixtures() -> Vec<(&'static str, Snapshot)> {
@@ -53,12 +71,37 @@ fn fixtures() -> Vec<(&'static str, Snapshot)> {
     s.apply(set_seed(8)).expect("apply");
     let both = s.undo().expect("undo");
 
+    // `edited`, then saved as trip.kwikvid: clean, revision bumped.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut s = session();
+    s.apply(set_seed(7)).expect("apply");
+    let mut saved = s
+        .save_as(&dir.path().join("saved.kwikvid"))
+        .expect("save as");
+    saved.media_root = PathBuf::from(PROJECT_DIR);
+
+    // A project with three clips (none on disk), opened in place of
+    // `edited` (revision 1): clean, no history, revision 2.
+    let mut p = Session::new(dir.path().to_path_buf());
+    for (id, name) in [(1, "GX010001"), (2, "GX010002"), (3, "GX010003")] {
+        p.apply(clip(id, &format!("clips/{name}.MP4"))).expect("add clip");
+    }
+    let file = dir.path().join("trip.kwikvid");
+    p.save_as(&file).expect("save project");
+    let (mut o, missing) = Session::open(&file).expect("open");
+    assert_eq!(missing.len(), 3);
+    o.continue_revisions(edited.revision);
+    let mut opened = o.snapshot();
+    opened.media_root = PathBuf::from(PROJECT_DIR);
+
     vec![
         ("initial", initial),
         ("edited", edited),
         ("undone", undone),
         ("redone", redone),
         ("undo-redo", both),
+        ("saved", saved),
+        ("opened", opened),
     ]
 }
 
