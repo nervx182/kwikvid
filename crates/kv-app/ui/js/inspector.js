@@ -270,11 +270,12 @@ function buildStrip() {
   if (state.mediaId === null) return;
   for (let i = 0; i < FILMSTRIP_CELLS; i++) {
     const cell = el("div", "ins-cell");
+    cell.dataset.thumb = thumbUrl(state.mediaId, i);
     const img = el("img");
     img.alt = "";
     img.draggable = false;
     img.addEventListener("error", () => img.remove());
-    img.src = thumbUrl(state.mediaId, i);
+    img.src = cell.dataset.thumb;
     cell.append(img);
     cells.append(cell);
   }

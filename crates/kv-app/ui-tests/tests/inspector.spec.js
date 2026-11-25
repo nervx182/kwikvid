@@ -56,8 +56,8 @@ test("selecting a library item opens the inspector with filmstrip, head and HiLi
   await expect(page.getByTestId("clip-inspector")).toBeHidden();
   await select(page, 1);
   await expect(page.getByTestId("inspector-name")).toHaveText("GX010001.MP4");
-  await expect(page.locator("#inspector-cells img")).toHaveCount(12);
-  await expect(page.locator("#inspector-cells img").nth(3)).toHaveAttribute("src", "kvthumb://1/3");
+  await expect(page.locator(".ins-cell")).toHaveCount(12);
+  await expect(page.locator(".ins-cell").nth(3)).toHaveAttribute("data-thumb", "kvthumb://1/3");
   await expect(page.getByTestId("inspector-time")).toHaveText("0:00.0 / 1:15.0");
   await expect(page.getByTestId("inspector-frame")).toHaveAttribute("src", "kvthumb://1/0");
   const ticks = page.getByTestId("inspector-hilight");
@@ -223,8 +223,17 @@ test("overlays show pins and excludes; × removes them with the exact range", as
   const bg = await ex.evaluate((e) => getComputedStyle(e).backgroundImage);
   expect(bg).toContain("repeating-linear-gradient");
 
-  await mock.respond("apply", { ...library, revision: constraints.revision + 1 });
+  // constraints without the pin, then without clip 1's exclude too.
+  const unpinned = structuredClone(constraints);
+  unpinned.revision += 1;
+  unpinned.project.sections[0].pins = [];
+  const unexcluded = structuredClone(unpinned);
+  unexcluded.revision += 1;
+  unexcluded.project.sections[0].excludes.shift();
+  await mock.respond("apply", unpinned);
   await pin.getByTestId("inspector-remove").click();
+  await expect(pin).toHaveCount(0);
+  await mock.respond("apply", unexcluded);
   await ex.getByTestId("inspector-remove").click();
   expect(await mock.commands("apply")).toEqual([
     apply({ type: "unpin_range", section: 1, range: range(1, 10 * S, 15 * S) }),
