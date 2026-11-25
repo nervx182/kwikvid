@@ -54,10 +54,16 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
 
     #[test]
-    fn plans_are_well_formed(raw in prop::collection::vec(raw_seg(), 0..6), fps_i in 0usize..5) {
+    fn plans_are_well_formed(
+        raw in prop::collection::vec(raw_seg(), 0..6),
+        fps_i in 0usize..5,
+        src_fps in prop::collection::vec(prop::option::of(0usize..5), 5),
+    ) {
         let edl = build(&raw);
         let fps = FPS[fps_i];
-        let p = plan(&edl, fps).unwrap();
+        // Media 1..5: a source rate from the same list, or unknown.
+        let source_fps = |m: MediaId| src_fps[m.0 as usize].map(|i| FPS[i]);
+        let p = plan(&edl, fps, &source_fps).unwrap();
 
         // Frame count matches the EDL length within one frame.
         let end = edl
@@ -80,7 +86,12 @@ proptest! {
             prev_pts = Some(f.pts);
             prop_assert!(f.pts.0 < end);
 
-            prop_assert!(f.layers.len() <= 2);
+            // Two segments in a crossfade, two source frames each in slow
+            // motion.
+            prop_assert!(f.layers.len() <= 4);
+            let segs: std::collections::BTreeSet<usize> =
+                f.layers.iter().map(|l| l.segment).collect();
+            prop_assert!(segs.len() <= 2);
             if !edl.segments.is_empty() {
                 // Repacked EDLs have no gaps.
                 prop_assert!(!f.layers.is_empty(), "gap at {:?}", f.pts);
@@ -91,6 +102,9 @@ proptest! {
                 prop_assert_eq!(l.media_id, s.media_id);
                 prop_assert!(l.src_time >= s.src_in && l.src_time < s.src_out);
                 prop_assert!(l.weight > 0.0 && l.weight <= 1.0);
+                if s.speed.0 >= 100 {
+                    prop_assert_eq!(f.layers.iter().filter(|m| m.segment == l.segment).count(), 1);
+                }
                 sum += l.weight;
             }
             if !f.layers.is_empty() {

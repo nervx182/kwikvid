@@ -2,7 +2,8 @@
 //!
 //! - The frame plan: the pure mapping from an edit decision list ([`Edl`])
 //!   to output frames, each listing the source frames visible in it and
-//!   their blend weights ([`plan`], [`FramePlan`]).
+//!   their blend weights ([`plan`], [`FramePlan`]). Slow motion blends the
+//!   two source frames around the exact source time (ADR 0005).
 //! - The CPU export compositor (ADR 0009): turns a frame's decoded layers
 //!   into output pixels ([`composite`], [`Fit`], [`source_size_for`]).
 //! - The export pipeline: a project section to an MP4 ([`export()`]).
@@ -37,7 +38,10 @@ pub struct Layer {
     pub media_id: MediaId,
     /// Index of the segment in [`Edl::segments`].
     pub segment: usize,
-    /// Time in the source media to show, within `[src_in, src_out)`.
+    /// Time in the source media to show, within `[src_in, src_out)`. When
+    /// the source frame rate is known this is the pts of the source frame
+    /// to show (raised to `src_in` if that frame starts before it), so
+    /// `VideoReader::frame_at(src_time)` returns exactly that frame.
     pub src_time: Micros,
     /// Blend weight in `(0, 1]`; the layers of a frame sum to 1.
     pub weight: f32,
@@ -49,25 +53,57 @@ pub struct OutputFrame {
     pub index: u64,
     /// Presentation time on the section timeline.
     pub pts: Micros,
-    /// At most two layers, outgoing first. Empty means a gap: draw black.
+    /// At most four layers, outgoing segment first: one or two segments
+    /// (two in a crossfade), each shown as one source frame, or as the two
+    /// source frames around the exact source time in slow motion
+    /// (`speed < 100`), earlier frame first. Empty means a gap: draw black.
     pub layers: Vec<Layer>,
 }
 
+/// The frame rate of each source media item, for [`plan`]: `None` (or an
+/// invalid rate) when unknown, which disables snapping and blending for
+/// that media.
+pub type SourceFps<'a> = &'a dyn Fn(MediaId) -> Option<Rational>;
+
 /// The output frames of an EDL at a frame rate. Frames are computed on
 /// demand, so a plan is cheap to build for any edit length.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct FramePlan<'a> {
     edl: &'a Edl,
     fps: Rational,
+    source_fps: SourceFps<'a>,
     len: u64,
 }
 
-/// Plan the output frames of `edl` at `fps`.
+impl std::fmt::Debug for FramePlan<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FramePlan")
+            .field("edl", self.edl)
+            .field("fps", &self.fps)
+            .field("len", &self.len)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Plan the output frames of `edl` at `fps`; `source_fps` gives each
+/// media item's frame rate (`VideoInfo::fps`).
 ///
 /// Frame `k` has `pts = round(k * 1e6 * den / num)` microseconds, computed
 /// exactly in integers. The plan holds every frame whose pts is before the
 /// end of the edit (the latest `timeline_start + timeline_len`).
-pub fn plan(edl: &Edl, fps: Rational) -> Result<FramePlan<'_>, PlanError> {
+///
+/// With a known source frame rate, source frame `j` is taken to start at
+/// `round(j * 1e6 * den / num)` (stream-relative, like reader times) and
+/// layers are snapped to it. A segment at `speed < 100` whose exact source
+/// time falls between frames `j` and `j + 1`, at fraction `f`, shows both:
+/// `(j, 1 - f)` and `(j + 1, f)`. Exactly on a frame (within 1 us of
+/// rounding) it shows that frame alone; frame `j + 1` is never shown when
+/// it starts at or after `src_out`.
+pub fn plan<'a>(
+    edl: &'a Edl,
+    fps: Rational,
+    source_fps: SourceFps<'a>,
+) -> Result<FramePlan<'a>, PlanError> {
     if fps.num <= 0 || fps.den <= 0 {
         return Err(PlanError::InvalidFps {
             num: fps.num,
@@ -76,7 +112,12 @@ pub fn plan(edl: &Edl, fps: Rational) -> Result<FramePlan<'_>, PlanError> {
     }
     let end = edl.segments.iter().map(segment_end).max().unwrap_or(0);
     let len = frames_before(end, fps);
-    Ok(FramePlan { edl, fps, len })
+    Ok(FramePlan {
+        edl,
+        fps,
+        source_fps,
+        len,
+    })
 }
 
 impl<'a> FramePlan<'a> {
@@ -104,7 +145,7 @@ impl<'a> FramePlan<'a> {
         Some(OutputFrame {
             index,
             pts: Micros(pts),
-            layers: layers_at(self.edl, pts),
+            layers: layers_at(self.edl, pts, self.source_fps),
         })
     }
 
@@ -159,6 +200,39 @@ fn src_time(seg: &Segment, pts: i64) -> Micros {
     Micros(i64::try_from(t).unwrap_or(i64::MAX))
 }
 
+/// The source frames shown for `seg` at its exact source time `t`, as
+/// `(src_time, weight)` with weights summing to 1 (see [`plan`]).
+fn source_frames(seg: &Segment, t: Micros, fps: Option<Rational>) -> Vec<(Micros, f64)> {
+    let Some(fps) = fps.filter(|r| r.num > 0 && r.den > 0) else {
+        return vec![(t, 1.0)];
+    };
+    let t = t.0;
+    if t < 0 {
+        return vec![(Micros(t), 1.0)];
+    }
+    // `j`: the last source frame starting at or before `t`.
+    let est = i128::from(t) * i128::from(fps.num) / (1_000_000 * i128::from(fps.den));
+    let mut j = u64::try_from(est).unwrap_or(u64::MAX - 1);
+    while j > 0 && frame_pts(j, fps) > t {
+        j -= 1;
+    }
+    while frame_pts(j + 1, fps) <= t {
+        j += 1;
+    }
+    let (a, b) = (frame_pts(j, fps), frame_pts(j + 1, fps));
+    let snap = |p: i64| Micros(p.max(seg.src_in.0));
+    // Within 1 us of a frame start: that frame (absorbs pts rounding).
+    let next_in_range = b < seg.src_out.0;
+    if next_in_range && b - t <= 1 {
+        return vec![(snap(b), 1.0)];
+    }
+    if t - a <= 1 || !next_in_range || seg.speed.0 >= Speed::NORMAL.0 {
+        return vec![(snap(a), 1.0)];
+    }
+    let f = (t - a) as f64 / (b - a) as f64;
+    vec![(snap(a), 1.0 - f), (snap(b), f)]
+}
+
 /// The layers visible at `pts`.
 ///
 /// When several segments cover `pts` the last two (by EDL order) are
@@ -166,8 +240,9 @@ fn src_time(seg: &Segment, pts: i64) -> Micros {
 /// linearly from 0 at its `timeline_start` to 1 after the fade length (the
 /// crossfade duration, shortened to the actual overlap if `repack` clamped
 /// it). A cut, or an overlap without a crossfade, shows the incoming segment
-/// alone. Layers with zero weight are dropped.
-fn layers_at(edl: &Edl, pts: i64) -> Vec<Layer> {
+/// alone. Layers with zero weight are dropped. Each segment then expands to
+/// its [`source_frames`], so a slow-motion crossfade has up to four layers.
+fn layers_at(edl: &Edl, pts: i64, source_fps: SourceFps<'_>) -> Vec<Layer> {
     // The last two covering segments: `out` then `inc` (if any).
     let mut out = None;
     let mut inc = None;
@@ -185,26 +260,36 @@ fn layers_at(edl: &Edl, pts: i64) -> Vec<Layer> {
         Some(o) => (Some(o), inc),
         None => (inc, None),
     };
-    let layer = |(i, s): (usize, &Segment), weight: f32| Layer {
-        media_id: s.media_id,
-        segment: i,
-        src_time: src_time(s, pts),
-        weight,
-    };
-    match (out, inc) {
+    let shown: Vec<((usize, &Segment), f32)> = match (out, inc) {
         (None, _) => Vec::new(),
-        (Some(only), None) => vec![layer(only, 1.0)],
+        (Some(only), None) => vec![(only, 1.0)],
         (Some(o), Some(n)) => {
             let w = incoming_weight(o.1, n.1, pts);
             if w >= 1.0 {
-                vec![layer(n, 1.0)]
+                vec![(n, 1.0)]
             } else if w <= 0.0 {
-                vec![layer(o, 1.0)]
+                vec![(o, 1.0)]
             } else {
-                vec![layer(o, 1.0 - w), layer(n, w)]
+                vec![(o, 1.0 - w), (n, w)]
+            }
+        }
+    };
+    let mut layers = Vec::with_capacity(4);
+    for ((i, s), weight) in shown {
+        let frames = source_frames(s, src_time(s, pts), source_fps(s.media_id));
+        for (t, f) in frames {
+            let w = (f64::from(weight) * f) as f32;
+            if w > 0.0 {
+                layers.push(Layer {
+                    media_id: s.media_id,
+                    segment: i,
+                    src_time: t,
+                    weight: w,
+                });
             }
         }
     }
+    layers
 }
 
 fn incoming_weight(out: &Segment, inc: &Segment, pts: i64) -> f32 {
@@ -244,14 +329,42 @@ mod tests {
         e
     }
 
+    /// Source frame rate unknown: no snapping, no blending.
+    fn no_fps(_: MediaId) -> Option<Rational> {
+        None
+    }
+
+    /// Every source at 30 fps.
+    fn src30(_: MediaId) -> Option<Rational> {
+        Some(FPS30)
+    }
+
     fn frames(e: &Edl, fps: Rational) -> Vec<OutputFrame> {
-        plan(e, fps).unwrap().iter().collect()
+        plan(e, fps, &no_fps).unwrap().iter().collect()
+    }
+
+    fn summary(layers: &[Layer]) -> Vec<(u64, i64, f32)> {
+        layers
+            .iter()
+            .map(|l| (l.media_id.0, l.src_time.0, l.weight))
+            .collect()
+    }
+
+    fn assert_weights(f: &OutputFrame, want: &[(u64, i64, f32)]) {
+        let got = summary(&f.layers);
+        assert_eq!(got.len(), want.len(), "frame {}: {got:?}", f.index);
+        for (g, w) in got.iter().zip(want) {
+            assert_eq!((g.0, g.1), (w.0, w.1), "frame {}: {got:?}", f.index);
+            assert!((g.2 - w.2).abs() < 1e-4, "frame {}: {got:?}", f.index);
+        }
+        let sum: f32 = f.layers.iter().map(|l| l.weight).sum();
+        assert!((sum - 1.0).abs() < 1e-6, "frame {}: sum {sum}", f.index);
     }
 
     #[test]
     fn empty_edl_has_no_frames() {
         let e = Edl::default();
-        let p = plan(&e, FPS30).unwrap();
+        let p = plan(&e, FPS30, &no_fps).unwrap();
         assert!(p.is_empty());
         assert_eq!(p.iter().count(), 0);
         assert_eq!(p.frame(0), None);
@@ -261,11 +374,11 @@ mod tests {
     fn invalid_fps_is_rejected() {
         let e = Edl::default();
         assert_eq!(
-            plan(&e, Rational::new(0, 1)).unwrap_err(),
+            plan(&e, Rational::new(0, 1), &no_fps).unwrap_err(),
             PlanError::InvalidFps { num: 0, den: 1 }
         );
-        assert!(plan(&e, Rational::new(30, 0)).is_err());
-        assert!(plan(&e, Rational::new(-30, 1)).is_err());
+        assert!(plan(&e, Rational::new(30, 0), &no_fps).is_err());
+        assert!(plan(&e, Rational::new(-30, 1), &no_fps).is_err());
     }
 
     #[test]
@@ -325,7 +438,7 @@ mod tests {
             ),
         ]);
         assert_eq!(e.segments[1].timeline_start, Micros(1_000_000));
-        let p = plan(&e, Rational::new(10, 1)).unwrap();
+        let p = plan(&e, Rational::new(10, 1), &no_fps).unwrap();
         assert_eq!(p.len(), 30); // ends at 3 s
 
         // Before the overlap: outgoing alone.
@@ -369,7 +482,7 @@ mod tests {
             ),
         ]);
         assert_eq!(e.segments[1].timeline_start, Micros(0));
-        let p = plan(&e, Rational::new(10, 1)).unwrap();
+        let p = plan(&e, Rational::new(10, 1), &no_fps).unwrap();
         let f5 = p.frame(5).unwrap();
         assert!((f5.layers[1].weight - 0.5).abs() < 1e-6);
         assert_eq!(p.frame(10).unwrap().layers.len(), 1);
@@ -379,7 +492,7 @@ mod tests {
     fn speed_50_is_slow_motion() {
         // 1 s of source at 50 % lasts 2 s.
         let e = edl(vec![seg(1, 1_000_000, 2_000_000, Transition::Cut, 50)]);
-        let p = plan(&e, Rational::new(10, 1)).unwrap();
+        let p = plan(&e, Rational::new(10, 1), &no_fps).unwrap();
         assert_eq!(p.len(), 20);
         for f in p.iter() {
             assert_eq!(f.layers[0].src_time, Micros(1_000_000 + f.pts.0 / 2));
@@ -390,7 +503,7 @@ mod tests {
     fn speed_200_is_double_speed() {
         // 2 s of source at 200 % lasts 1 s.
         let e = edl(vec![seg(1, 0, 2_000_000, Transition::Cut, 200)]);
-        let p = plan(&e, Rational::new(10, 1)).unwrap();
+        let p = plan(&e, Rational::new(10, 1), &no_fps).unwrap();
         assert_eq!(p.len(), 10);
         for f in p.iter() {
             assert_eq!(f.layers[0].src_time, Micros(f.pts.0 * 2));
@@ -406,7 +519,7 @@ mod tests {
         // Speed 300 with integer timeline length: the last covered instant
         // maps just below src_out.
         let e = edl(vec![s]);
-        let last = layers_at(&e, segment_end(&e.segments[0]) - 1);
+        let last = layers_at(&e, segment_end(&e.segments[0]) - 1, &no_fps);
         assert!(last[0].src_time < Micros(2_000));
     }
 
@@ -418,7 +531,7 @@ mod tests {
         ]);
         // Not repacked: leave [1 s, 2 s) uncovered.
         e.segments[1].timeline_start = Micros(2_000_000);
-        let p = plan(&e, FPS30).unwrap();
+        let p = plan(&e, FPS30, &no_fps).unwrap();
         assert_eq!(p.len(), 90);
         assert!(p.frame(29).unwrap().layers.len() == 1);
         assert!(p.frame(30).unwrap().layers.is_empty());
@@ -430,7 +543,7 @@ mod tests {
     fn ntsc_timing_is_exact_over_ten_minutes() {
         // 10 minutes at 30000/1001.
         let e = edl(vec![seg(1, 0, 600_000_000, Transition::Cut, 100)]);
-        let p = plan(&e, NTSC).unwrap();
+        let p = plan(&e, NTSC, &no_fps).unwrap();
         // 600 s * 30000/1001 = 17982.01...: frames 0..=17982.
         assert_eq!(p.len(), 17_983);
         assert_eq!(p.frame(1).unwrap().pts, Micros(33_367)); // 33366.67
@@ -450,8 +563,139 @@ mod tests {
     fn frame_count_boundary_is_exclusive() {
         // An edit ending exactly on a frame boundary excludes that frame.
         let e = edl(vec![seg(1, 0, 100_000, Transition::Cut, 100)]);
-        assert_eq!(plan(&e, Rational::new(10, 1)).unwrap().len(), 1);
+        assert_eq!(plan(&e, Rational::new(10, 1), &no_fps).unwrap().len(), 1);
         let e = edl(vec![seg(1, 0, 100_001, Transition::Cut, 100)]);
-        assert_eq!(plan(&e, Rational::new(10, 1)).unwrap().len(), 2);
+        assert_eq!(plan(&e, Rational::new(10, 1), &no_fps).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn slow_motion_blends_the_frames_around_the_source_time() {
+        // 1 s of a 30 fps source from 1 s, at 50 %, output at 30 fps.
+        let e = edl(vec![seg(1, 1_000_000, 2_000_000, Transition::Cut, 50)]);
+        let p = plan(&e, FPS30, &src30).unwrap();
+        assert_eq!(p.len(), 60);
+        for f in p.iter() {
+            let j = 30 + f.index as i64 / 2; // source frame at or before
+            let pj = frame_pts(j as u64, FPS30);
+            if f.index % 2 == 0 {
+                // Exactly on source frame j: one layer, snapped to its pts.
+                assert_weights(&f, &[(1, pj, 1.0)]);
+            } else if j == 59 {
+                // Frame 60 is at src_out: hold frame 59.
+                assert_weights(&f, &[(1, pj, 1.0)]);
+            } else {
+                let pn = frame_pts(j as u64 + 1, FPS30);
+                assert_weights(&f, &[(1, pj, 0.5), (1, pn, 0.5)]);
+            }
+        }
+    }
+
+    #[test]
+    fn slow_motion_weights_follow_the_fractional_position() {
+        // 25 % at 30 fps output on a 30 fps source: quarters.
+        let e = edl(vec![seg(1, 0, 1_000_000, Transition::Cut, 25)]);
+        let p = plan(&e, FPS30, &src30).unwrap();
+        let (p1, p2) = (frame_pts(1, FPS30), frame_pts(2, FPS30));
+        assert_weights(&p.frame(4).unwrap(), &[(1, p1, 1.0)]);
+        assert_weights(&p.frame(5).unwrap(), &[(1, p1, 0.75), (1, p2, 0.25)]);
+        assert_weights(&p.frame(6).unwrap(), &[(1, p1, 0.5), (1, p2, 0.5)]);
+        assert_weights(&p.frame(7).unwrap(), &[(1, p1, 0.25), (1, p2, 0.75)]);
+        assert_weights(&p.frame(8).unwrap(), &[(1, p2, 1.0)]);
+    }
+
+    #[test]
+    fn layers_snap_to_source_frame_pts() {
+        // Normal speed, 24 fps output of a 30 fps source starting off-grid:
+        // one layer at the pts of the frame shown, never blended.
+        let src_in = 1_010_000; // inside source frame 30 (1 s .. 1.0333 s)
+        let e = edl(vec![seg(1, src_in, 2_000_000, Transition::Cut, 100)]);
+        let p = plan(&e, Rational::new(24, 1), &src30).unwrap();
+        for f in p.iter() {
+            assert_eq!(f.layers.len(), 1);
+            let l = f.layers[0];
+            let t = src_in + f.pts.0;
+            let j = t * 30 / 1_000_000;
+            let want = frame_pts(j as u64, FPS30).max(src_in);
+            assert_eq!(l.src_time, Micros(want), "frame {}", f.index);
+            assert!(l.src_time.0 <= t);
+        }
+        // The first frame starts before src_in: raised to src_in.
+        assert_eq!(p.frame(0).unwrap().layers[0].src_time, Micros(src_in));
+
+        // A source time 1 us short of a frame (pts rounding) is that frame.
+        let s = seg(1, 0, 1_000_000, Transition::Cut, 100);
+        assert_eq!(
+            source_frames(&s, Micros(66_666), Some(FPS30)),
+            vec![(Micros(66_667), 1.0)]
+        );
+        // Unknown or invalid rate: the time as is.
+        assert_eq!(
+            source_frames(&s, Micros(66_000), None),
+            vec![(Micros(66_000), 1.0)]
+        );
+        assert_eq!(
+            source_frames(&s, Micros(66_000), Some(Rational::new(0, 1))),
+            vec![(Micros(66_000), 1.0)]
+        );
+        // NTSC source: frame 1 starts at 33367.
+        assert_eq!(
+            source_frames(&s, Micros(40_000), Some(NTSC)),
+            vec![(Micros(33_367), 1.0)]
+        );
+    }
+
+    #[test]
+    fn slow_motion_crossfade_has_four_layers() {
+        // Two 1 s sources at 50 % (2 s each) with a 1 s crossfade, output
+        // and sources at 30 fps: the overlap is [1 s, 2 s).
+        let e = edl(vec![
+            seg(1, 0, 1_000_000, Transition::Cut, 50),
+            seg(
+                2,
+                3_000_000,
+                4_000_000,
+                Transition::Crossfade {
+                    duration: Micros(1_000_000),
+                },
+                50,
+            ),
+        ]);
+        assert_eq!(e.segments[1].timeline_start, Micros(1_000_000));
+        let p = plan(&e, FPS30, &src30).unwrap();
+        assert_eq!(p.len(), 90);
+
+        // Frame 45 (1.5 s): incoming weight 0.5; outgoing source at 0.75 s
+        // (between frames 22 and 23, f = 0.5), incoming at 3.25 s (between
+        // 97 and 98, f = 0.5).
+        let f = p.frame(45).unwrap();
+        assert_weights(
+            &f,
+            &[
+                (1, frame_pts(22, FPS30), 0.25),
+                (1, frame_pts(23, FPS30), 0.25),
+                (2, frame_pts(97, FPS30), 0.25),
+                (2, frame_pts(98, FPS30), 0.25),
+            ],
+        );
+        assert_eq!(
+            f.layers.iter().map(|l| l.segment).collect::<Vec<_>>(),
+            [0, 0, 1, 1]
+        );
+        // Frame 46: both on a source frame again: two layers.
+        let f = p.frame(46).unwrap();
+        assert_eq!(f.layers.len(), 2);
+        // Every frame of the overlap has 2 or 4 layers, never more...
+        for k in 31..59 {
+            let n = p.frame(k).unwrap().layers.len();
+            assert!(n == 2 || n == 4, "frame {k}: {n} layers");
+        }
+        // ...except the last, where the outgoing source holds its last
+        // frame (the next one starts at src_out) and the incoming blends.
+        let f = p.frame(59).unwrap();
+        assert_eq!(
+            f.layers.iter().map(|l| l.segment).collect::<Vec<_>>(),
+            [0, 1, 1]
+        );
+        assert_eq!(f.layers[0].src_time, Micros(frame_pts(29, FPS30)));
     }
 }
