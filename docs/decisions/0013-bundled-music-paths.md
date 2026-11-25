@@ -1,4 +1,4 @@
-# 0012 Bundled music: referenced in place from the app resources
+# 0013 Bundled music: referenced in place from the app resources
 
 Status: accepted (2026-11-25), reversible
 

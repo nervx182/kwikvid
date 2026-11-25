@@ -1,5 +1,5 @@
 //! Music picker IPC (`ui/js/music.js`): the bundled track list, the file
-//! picker, and the analyse-then-set flow (ADR 0012).
+//! picker, and the analyse-then-set flow (ADR 0013).
 //!
 //! - `bundled_tracks()` lists the tracks in the app resource
 //!   `music/manifest.toml` (copied from `assets/music/`) whose file is

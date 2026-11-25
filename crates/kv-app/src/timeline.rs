@@ -1,5 +1,5 @@
 //! IPC behind the timeline view (`ui/js/timeline.js`): the beat grid of a
-//! section's music and the click-to-seek command.
+//! section's music. Seeking is the transport's (`transport.rs`).
 //!
 //! Beats are fetched with their own command instead of riding in every
 //! [`kv_session::Snapshot`]: a song has hundreds of beats that never change
@@ -46,27 +46,12 @@ pub fn beats(session: &Session, section: SectionId) -> Result<Option<Beats>, Ipc
     }))
 }
 
-/// Where the playhead may go: never before the start. The preview engine
-/// takes this over (and clamps to the edit's end) once it exists.
-pub fn seek_target(position: Micros) -> Micros {
-    Micros(position.0.max(0))
-}
-
 #[tauri::command]
 pub fn get_beats(
     state: State<'_, AppState>,
     section: SectionId,
 ) -> Result<Option<Beats>, IpcError> {
     beats(&*state.session()?, section)
-}
-
-/// Move the playhead. Until the preview engine is wired in this only
-/// validates the position and echoes it back; the UI moves its playhead.
-#[tauri::command]
-pub fn seek(position: Micros) -> Micros {
-    let target = seek_target(position);
-    tracing::debug!(?target, "seek");
-    target
 }
 
 #[cfg(test)]
@@ -164,11 +149,5 @@ mod tests {
             serde_json::from_str(include_str!("../ui-tests/fixtures/beats-song.json")).unwrap();
         let ours = serde_json::to_value(beats(&s, S).unwrap()).unwrap();
         assert_eq!(ours, fixture);
-    }
-
-    #[test]
-    fn seek_never_goes_before_the_start() {
-        assert_eq!(seek_target(Micros(-5)), Micros(0));
-        assert_eq!(seek_target(Micros(1_500_000)), Micros(1_500_000));
     }
 }

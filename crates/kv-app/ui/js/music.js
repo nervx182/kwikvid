@@ -2,7 +2,7 @@
 // analysis status while it runs, then the section's song with its name,
 // duration, tempo and a beat strip over the first 30 s, and "Remove music".
 //
-// Backend (src/music.rs, ADR 0012): invoke("bundled_tracks") resolves to
+// Backend (src/music.rs, ADR 0013): invoke("bundled_tracks") resolves to
 // [{ id, title, artist, path }] (empty when none ship); invoke("pick_music")
 // to an absolute path or null; invoke("analyze_music", { section, path }) to
 // the queued job { id, kind: "music-analysis", state, ... }. The job then

@@ -1,0 +1,79 @@
+{
+  "revision": 4,
+  "project": {
+    "version": 1,
+    "id": 1,
+    "media": [
+      {
+        "id": 1,
+        "path": "DCIM/100GOPRO/GX010001.MP4",
+        "duration": 75000000,
+        "kind": "video",
+        "hilights": [
+          15000000,
+          60000000
+        ],
+        "clip_audio": false
+      },
+      {
+        "id": 2,
+        "path": "DCIM/100GOPRO/GX010002.MP4",
+        "duration": 10000000,
+        "kind": "video",
+        "hilights": [],
+        "clip_audio": false
+      },
+      {
+        "id": 3,
+        "path": "DCIM/100GOPRO/GX010042.MP4",
+        "duration": 40000000,
+        "kind": "video",
+        "hilights": [
+          30000000
+        ],
+        "clip_audio": false,
+        "chapters": [
+          {
+            "path": "DCIM/100GOPRO/GX010042.MP4",
+            "duration": 20000000
+          },
+          {
+            "path": "DCIM/100GOPRO/GX020042.MP4",
+            "duration": 20000000
+          }
+        ]
+      }
+    ],
+    "sections": [
+      {
+        "id": 1,
+        "music": null,
+        "target_length": {
+          "type": "full_song"
+        },
+        "pins": [
+          {
+            "media_id": 1,
+            "start": 10000000,
+            "end": 15000000
+          }
+        ],
+        "excludes": [],
+        "seed": 0,
+        "edit": {
+          "segments": []
+        },
+        "style": "cut",
+        "title": null
+      }
+    ],
+    "settings": {
+      "aspect_ratio": "landscape16x9",
+      "music_volume_percent": 100
+    }
+  },
+  "can_undo": true,
+  "can_redo": false,
+  "dirty": true,
+  "media_root": "/home/ana"
+}

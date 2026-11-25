@@ -10,6 +10,8 @@
     <link rel="stylesheet" href="css/timeline.css" />
     <link rel="stylesheet" href="css/autoedit.css" />
     <link rel="stylesheet" href="css/library.css" />
+    <link rel="stylesheet" href="css/inspector.css" />
+    <link rel="stylesheet" href="css/transport.css" />
     <link rel="stylesheet" href="css/music.css" />
   </head>
   <body>
@@ -26,7 +28,13 @@
         <p class="placeholder" id="library-summary"></p>
       </aside>
       <!-- Transparent on purpose: the native preview layer draws underneath (ADR 0007). -->
-      <main class="viewer" data-testid="viewer" aria-label="Viewer"></main>
+      <main class="viewer" data-testid="viewer" aria-label="Viewer">
+        <div class="transport" data-testid="transport">
+          <button type="button" id="transport-play" data-testid="transport-play" title="Play (Space)" aria-label="Play">▶</button>
+          <span class="transport-readout"><b id="transport-time" data-testid="transport-time" data-position="0">0:00.00</b> / <span id="transport-length" data-testid="transport-length">0:00.00</span></span>
+        </div>
+        <pre class="preview-debug" id="preview-debug" data-testid="preview-debug" hidden></pre>
+      </main>
       <aside class="pane inspector" data-testid="inspector">
         <h2>Inspector</h2>
         <dl id="inspector-summary"></dl>
@@ -47,7 +55,7 @@
           <p class="tl-error" id="timeline-error" data-testid="timeline-error" role="alert" hidden></p>
           <div class="tl-scroll" id="timeline-scroll">
             <div class="tl-content" id="timeline-content" data-testid="timeline-content">
-              <div class="tl-ruler" id="timeline-ruler" data-testid="timeline-ruler" title="Click to move the playhead">
+              <div class="tl-ruler" id="timeline-ruler" data-testid="timeline-ruler" title="Click or drag to move the playhead">
                 <div class="tl-beats" id="timeline-beats" data-testid="timeline-beats"></div>
               </div>
               <div class="tl-target-marker" id="timeline-target-marker" hidden></div>

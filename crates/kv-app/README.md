@@ -72,6 +72,8 @@ which). Signing, notarisation and a DMG are out of scope for now.
 | `src/preview.rs` | `PreviewBackend` (the one place the preview backend is chosen), viewer rect and letterbox math, test pattern. Portable. |
 | `src/blit.rs` | `SurfaceGpu` (a `GpuContext` that can present) and `Blitter` (draws the last frame letterboxed). Portable, tested headless. |
 | `src/native_view.rs` | macOS only: the `NSView` + `CAMetalLayer` under the webview, its wgpu surface (Fifo, one frame of latency) and the `FrameSink` (ADR 0007). |
+| `src/transport.rs` | Transport over the preview engine: `play` / `pause` / `seek` / `get_transport`, `kv://position`, edits handed to `set_edit`, seek latency from the engine's `preview_seek` span (`get_preview_stats`). Unit-tested with a fake engine. |
+| `ui/js/transport.js` | Play/pause button, m:ss.ff readout, Space / arrows / Shift+arrows / Home / End, ruler scrubbing (one seek in flight), debug overlay on Cmd/Ctrl+Shift+D. |
 | `ui/js/viewer.js` | Sends the viewer rectangle (`set_viewer_rect`) on load, resize, layout change and fullscreen. |
 | `tauri.conf.json` | Window (transparent, for the native preview layer of ADR 0007), `macOSPrivateApi`, CSP. |
 | `capabilities/default.json` | Permissions of the main window (`core:default`). |
@@ -90,7 +92,13 @@ which). Signing, notarisation and a DMG are out of scope for now.
   pixels relative to the page and `devicePixelRatio`; resolves to `null`.
   The native layer covers it and letterboxes the preview to the project's
   aspect ratio.
-- Every call resolves to a `kv_session::Snapshot` (snake_case keys:
+- `play()`, `pause()`, `seek({ position })`, `get_transport()`: resolve to
+  `{ position, playing, frame_us }` (microseconds). While it changes, the
+  backend emits the same object as `kv://position`, at most ~15 times a
+  second. `get_preview_stats()`: `{ backend, engine, presented, dropped,
+  seek: { count, last_ms, p50_ms, p95_ms } }` for the debug overlay; p50/p95
+  are also logged every 20 seeks.
+- Other calls resolve to a `kv_session::Snapshot` (snake_case keys:
   `revision`, `project`, `can_undo`, `can_redo`, `dirty`, `media_root`) or
   rejects with `{ "message": "..." }`, which the UI shows as a toast.
 - After each change (and on page load) the backend emits `kv://state` with
