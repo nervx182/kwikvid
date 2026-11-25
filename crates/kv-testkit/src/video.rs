@@ -48,8 +48,11 @@ pub struct ClipSpec {
     pub height: u32,
     /// Frame rate as `(numerator, denominator)`, e.g. `(30000, 1001)`.
     pub fps: (i32, i32),
-    /// Add a quiet 440 Hz mono AAC track.
+    /// Add a quiet mono AAC track: a sine of [`Self::audio_hz`] at
+    /// amplitude 0.05.
     pub audio: bool,
+    /// Frequency of the audio track's tone in Hz (> 0). Default 440.
+    pub audio_hz: u32,
     /// File name to use. `None`: a name derived from the spec, directly in
     /// [`fixtures_dir`]. `Some(name)`: `name` inside a directory derived from
     /// the spec, so the cache key still covers every field.
@@ -57,7 +60,7 @@ pub struct ClipSpec {
 }
 
 impl Default for ClipSpec {
-    /// 320x240, 30 fps, 2 s, clip 0, no audio.
+    /// 320x240, 30 fps, 2 s, clip 0, no audio (440 Hz when turned on).
     fn default() -> Self {
         Self {
             clip: 0,
@@ -66,6 +69,7 @@ impl Default for ClipSpec {
             height: 240,
             fps: (30, 1),
             audio: false,
+            audio_hz: 440,
             file_name: None,
         }
     }
@@ -86,7 +90,11 @@ impl ClipSpec {
             self.fps.0,
             self.fps.1,
             name_num(self.seconds),
-            if self.audio { "aac" } else { "noaudio" },
+            if self.audio {
+                format!("aac{}hz", self.audio_hz)
+            } else {
+                "noaudio".into()
+            },
         )
     }
 
@@ -112,6 +120,7 @@ impl ClipSpec {
             (1..=usize::from(u16::MAX) + 1).contains(&n),
             "a clip needs 1..=65536 frames, got {n}"
         );
+        assert!(self.audio_hz > 0, "audio_hz must be > 0");
         if let Some(name) = &self.file_name {
             assert!(
                 !name.is_empty() && !name.contains(['/', '\\']) && name != "." && name != "..",
@@ -396,7 +405,8 @@ fn write_tagged_clip(path: &Path, spec: &ClipSpec, encoders: &[&str]) -> String 
                 let data = (*p).data[0] as *mut f32;
                 for s in 0..n {
                     let t = (pts + s) as f32 / AUDIO_RATE as f32;
-                    *data.add(s as usize) = 0.05 * (t * 440.0 * std::f32::consts::TAU).sin();
+                    *data.add(s as usize) =
+                        0.05 * (t * spec.audio_hz as f32 * std::f32::consts::TAU).sin();
                 }
             }
             f.set_pts(Some(pts));
@@ -500,6 +510,11 @@ mod tests {
                 audio: true,
                 ..base.clone()
             },
+            ClipSpec {
+                audio: true,
+                audio_hz: 1_000,
+                ..base.clone()
+            },
         ];
         let mut keys: Vec<_> = variants.iter().map(ClipSpec::cache_key).collect();
         keys.push(base.cache_key());
@@ -548,6 +563,7 @@ mod tests {
             height: 108,
             fps: (30000, 1001),
             audio: true,
+            audio_hz: 440,
             file_name: Some("custom.MP4".into()),
         };
         let path = tagged_clip(&spec);

@@ -14,7 +14,7 @@ pub const DEFAULT_FADE_OUT: Micros = Micros(1_000_000);
 
 /// Frames of extra source audio kept on each side of the trimmed range when
 /// resampling, so the resampler's filter sees real context at the edges.
-const RESAMPLE_MARGIN: usize = 2_048;
+pub(crate) const RESAMPLE_MARGIN: usize = 2_048;
 
 /// How to render the music bed. Build with [`MusicBedOptions::new`] and
 /// override fields as needed.
@@ -119,7 +119,10 @@ pub fn render_music_bed(
 }
 
 /// [`render_music_bed`] on already decoded audio. Options must be valid.
-fn render_decoded(decoded: DecodedAudio, options: &MusicBedOptions) -> Result<PcmAudio, Error> {
+pub(crate) fn render_decoded(
+    decoded: DecodedAudio,
+    options: &MusicBedOptions,
+) -> Result<PcmAudio, Error> {
     let channels = usize::from(options.channels);
     let src_rate = decoded.sample_rate;
     let source = map_channels(&decoded, channels);
@@ -232,7 +235,7 @@ fn apply_level(samples: &mut [f32], channels: usize, options: &MusicBedOptions) 
 }
 
 /// `round(t * rate)` frames for a non-negative `t`.
-fn micros_to_frames(t: Micros, rate: u32) -> usize {
+pub(crate) fn micros_to_frames(t: Micros, rate: u32) -> usize {
     let t = i128::from(t.0.max(0));
     ((t * i128::from(rate) + 500_000) / 1_000_000) as usize
 }

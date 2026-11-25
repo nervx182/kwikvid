@@ -19,20 +19,27 @@
 //! is a coarser tier and [`MusicAnalysis::onsets`] a finer, irregular one.
 //!
 //! For export, [`render_music_bed`] decodes the same file to stereo PCM at
-//! the encoder's rate, trimmed to the edit, with volume and fades.
+//! the encoder's rate, trimmed to the edit, with volume and fades;
+//! [`render_clip_audio`] renders the clips' own sound for the edit's
+//! segments (from [`decode_range`]), and [`mix_under_music`] mixes the two.
 
 mod beat;
 mod bed;
+mod clip;
 mod decode;
 mod onset;
 mod tempo;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use kv_core::Micros;
+use kv_core::{MediaId, Micros};
 use serde::{Deserialize, Serialize};
 
 pub use bed::{render_music_bed, MusicBedOptions, PcmAudio, DEFAULT_FADE_OUT};
+pub use clip::{
+    decode_range, mix_under_music, render_clip_audio, ClipAudioOptions, ClipAudioSource, CUT_FADE,
+    LIMITER_RELEASE,
+};
 
 /// Sample rate the analysis runs at, in Hz. Input is resampled to it.
 pub const ANALYSIS_SAMPLE_RATE: u32 = 22_050;
@@ -61,7 +68,8 @@ pub struct MusicAnalysis {
     pub energy: Vec<f32>,
 }
 
-/// Errors from [`analyze`] and [`render_music_bed`].
+/// Errors from [`analyze`], [`render_music_bed`] and the clip audio
+/// functions.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
@@ -81,8 +89,16 @@ pub enum Error {
     #[error("resampling failed: {0}")]
     Resample(String),
     /// [`MusicBedOptions`] are out of range.
-    #[error("invalid music bed options: {0}")]
+    #[error("invalid audio options: {0}")]
     InvalidOptions(&'static str),
+    /// Decoding the clip audio of a media item failed.
+    #[error("clip audio of media {media_id:?} ({path:?}): {source}")]
+    ClipSource {
+        media_id: MediaId,
+        path: PathBuf,
+        #[source]
+        source: Box<Error>,
+    },
 }
 
 /// Decode the music file at `path` and analyse it.
