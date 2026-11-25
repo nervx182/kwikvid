@@ -3,7 +3,8 @@
 //! The UI (plain HTML/CSS/ES modules in `ui/`, no bundler) calls five
 //! commands: `apply`, `undo`, `redo`, `get_state` and `reroll`, plus
 //! per-feature ones registered from their own module (the timeline's
-//! `get_beats` and `seek`). Each forwards to the
+//! `get_beats` and `seek`, the library's `import` and `pick_media`). Each
+//! forwards to the
 //! session (see [`ipc`]); after every change the backend emits a `kv://state`
 //! event with the new snapshot. Errors come back as `{ "message": "..." }`.
 //!
@@ -21,6 +22,7 @@
 
 mod blit;
 mod ipc;
+mod library;
 #[cfg(target_os = "macos")]
 mod native_view;
 mod preview;
@@ -185,7 +187,7 @@ fn main() -> anyhow::Result<()> {
         .init();
     let opts = Options::parse(std::env::args().skip(1));
 
-    tauri::Builder::default()
+    library::register(tauri::Builder::default())
         .invoke_handler(tauri::generate_handler![
             apply,
             undo,
@@ -194,12 +196,15 @@ fn main() -> anyhow::Result<()> {
             reroll,
             set_viewer_rect,
             timeline::get_beats,
-            timeline::seek
+            timeline::seek,
+            library::import,
+            library::pick_media
         ])
         .setup(move |app| {
             let root = media_root(app.handle());
             tracing::info!(media_root = %root.display(), "new session");
             app.manage(AppState::new(Session::new(root)));
+            app.manage(library::Library::start(app.handle()));
             let backend = PreviewBackend::preferred();
             tracing::info!(backend = backend.name(), "preview backend");
             if opts.preview_test_pattern && backend == PreviewBackend::Off {

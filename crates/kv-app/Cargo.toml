@@ -15,9 +15,11 @@ tauri-build = { version = "2.5", features = [] }
 
 [dependencies]
 anyhow = "1"
+kv-cache = { path = "../kv-cache" }
 kv-core = { path = "../kv-core" }
-# `VideoFrame` only; no FFmpeg.
-kv-media = { path = "../kv-media", default-features = false }
+# `VideoFrame`, plus probe, decode and filmstrips for import (FFmpeg, LGPL
+# dynamic build; ADR 0005).
+kv-media = { path = "../kv-media" }
 # Preview compositor, `FrameSink`, `GpuContext` (ADR 0007).
 kv-render = { path = "../kv-render" }
 kv-session = { path = "../kv-session" }
@@ -26,6 +28,7 @@ pollster = "0.4"
 serde.workspace = true
 # macos-private-api: transparent webview over the native preview layer (ADR 0007).
 tauri = { version = "2.12", features = ["macos-private-api"] }
+tauri-plugin-dialog = "2"
 tracing = "0.1"
 # Same pin and features as kv-render: the native preview layer shares its device.
 wgpu = { version = "=25.0.2", default-features = false, features = ["wgsl", "metal", "vulkan", "dx12"] }
@@ -40,6 +43,7 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 [dev-dependencies]
 kv-audio = { path = "../kv-audio" }
 serde_json.workspace = true
+tempfile = "3"
 
 [lints]
 workspace = true

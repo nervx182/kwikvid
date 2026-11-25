@@ -77,3 +77,20 @@ export function setViewerRect(rect) {
 export function onState(cb) {
   return tauri.event.listen(STATE_EVENT, (event) => cb(event.payload));
 }
+
+/**
+ * Call any other backend command by name, e.g. invoke("import", { paths }).
+ * Resolves to whatever the command returns.
+ */
+export function invoke(cmd, args) {
+  return call(cmd, args);
+}
+
+/**
+ * Call cb(payload) for every backend event `name` (e.g. "kv://job", or
+ * Tauri's "tauri://drag-drop" with { paths, position }). Resolves to a
+ * function that stops listening.
+ */
+export function onEvent(name, cb) {
+  return tauri.event.listen(name, (event) => cb(event.payload));
+}

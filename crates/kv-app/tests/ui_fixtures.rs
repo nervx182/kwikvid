@@ -21,11 +21,11 @@ use std::sync::Arc;
 
 use kv_audio::MusicAnalysis;
 use kv_core::{
-    Command, Edl, MediaId, MediaItem, MediaKind, Micros, MusicRef, Project, RangeRef, Segment,
-    Speed, TargetLength, Transition,
+    ChapterRef, Command, Edl, MediaId, MediaItem, MediaKind, Micros, MusicRef, Project, RangeRef,
+    Segment, Speed, TargetLength, Transition,
 };
 use kv_session::regen::RegenSnapshot;
-use kv_session::{Session, Snapshot};
+use kv_session::{ImportReport, Session, Snapshot};
 
 /// A fixed media root so the fixtures do not depend on the machine.
 const MEDIA_ROOT: &str = "/home/ana";
@@ -241,6 +241,49 @@ fn autoedit_fixtures() -> Vec<(&'static str, String)> {
     ]
 }
 
+/// The library fixture: a 75 s clip with HiLights at 15 s and 60 s, a
+/// 10 s clip without any, and a chaptered 40 s recording (two 20 s
+/// chapters) with a HiLight at 30 s.
+fn library_session() -> Session {
+    let mut s = session();
+    let item = |id: u64, name: &str, secs: i64, hilights: &[i64]| MediaItem {
+        id: MediaId(id),
+        path: format!("DCIM/100GOPRO/{name}"),
+        duration: Micros(secs * SEC),
+        kind: MediaKind::Video,
+        hilights: hilights.iter().map(|h| Micros(h * SEC)).collect(),
+        clip_audio: false,
+        chapters: Vec::new(),
+    };
+    let mut chaptered = item(3, "GX010042.MP4", 40, &[30]);
+    chaptered.chapters = ["GX010042.MP4", "GX020042.MP4"]
+        .iter()
+        .map(|n| ChapterRef {
+            path: format!("DCIM/100GOPRO/{n}"),
+            duration: Micros(20 * SEC),
+        })
+        .collect();
+    for item in [
+        item(1, "GX010001.MP4", 75, &[15, 60]),
+        item(2, "GX010002.MP4", 10, &[]),
+        chaptered,
+    ] {
+        s.apply(Command::AddMedia { item }).expect("library item");
+    }
+    s
+}
+
+/// The answer of `import` for the library fixture, with one skipped photo.
+fn import_report() -> ImportReport {
+    ImportReport {
+        added: vec![MediaId(1), MediaId(2), MediaId(3)],
+        skipped: vec![(
+            PathBuf::from("/home/ana/DCIM/100GOPRO/GOPR0007.JPG"),
+            "Only MP4 and MOV videos can be imported for now.".into(),
+        )],
+    }
+}
+
 /// Fixtures that are not a plain [`Snapshot`], rendered.
 fn other_fixtures() -> Vec<(&'static str, String)> {
     // Music set while its analysis is still running: the auto-regenerate
@@ -271,6 +314,7 @@ fn other_fixtures() -> Vec<(&'static str, String)> {
     vec![
         ("timeline-regen-error", render::<RegenSnapshot>(&pending)),
         ("beats-song", render(&beats)),
+        ("import-report", render(&import_report())),
     ]
 }
 
@@ -310,6 +354,15 @@ fn fixtures() -> Vec<(&'static str, Snapshot)> {
     s.apply(set_seed(8)).expect("apply");
     let both = s.undo().expect("undo");
 
+    // The library, then clip 2 removed.
+    let mut s = library_session();
+    let library = s.snapshot();
+    let library_removed = s
+        .apply(Command::RemoveMedia {
+            media_id: MediaId(2),
+        })
+        .expect("remove");
+
     vec![
         ("initial", initial),
         ("edited", edited),
@@ -318,6 +371,8 @@ fn fixtures() -> Vec<(&'static str, Snapshot)> {
         ("undo-redo", both),
         ("timeline-no-music", session_with_clips().snapshot()),
         ("timeline-edit", timeline_edit()),
+        ("library", library),
+        ("library-removed", library_removed),
     ]
 }
 

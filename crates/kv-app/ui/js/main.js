@@ -7,6 +7,7 @@ import { initToolbar, renderToolbar } from "./toolbar.js";
 import { initTimeline, renderTimeline } from "./timeline.js";
 import { initAutoEdit, renderAutoEdit } from "./autoedit.js";
 import { initViewer } from "./viewer.js";
+import { initLibrary, renderLibrary } from "./library.js";
 
 let current = null;
 
@@ -18,6 +19,7 @@ function render(snapshot) {
   renderToolbar(snapshot);
   renderTimeline(snapshot);
   renderAutoEdit(snapshot);
+  renderLibrary(snapshot);
   renderSummary(snapshot);
 }
 
@@ -56,6 +58,7 @@ async function run(promise) {
 initToolbar(run);
 initTimeline(run);
 initAutoEdit(run, render);
+initLibrary(run);
 initViewer(document.querySelector('[data-testid="viewer"]'), api.setViewerRect);
 api.onState(render);
 run(api.getState());
