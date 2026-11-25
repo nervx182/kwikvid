@@ -290,7 +290,9 @@ fn run_test_pattern(gpu: &SurfaceGpu, mut sink: NativeSink, (w, h): (u32, u32)) 
     }
 }
 
-/// The preview engine's [`FrameSink`] on the native layer.
+/// The preview engine's [`FrameSink`] on the native layer. Clones draw on
+/// the same surface.
+#[derive(Clone)]
 pub struct NativeSink {
     target: Arc<Mutex<Target>>,
 }

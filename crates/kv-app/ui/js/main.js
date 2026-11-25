@@ -10,6 +10,7 @@ import { initAutoEdit, renderAutoEdit } from "./autoedit.js";
 import { initViewer } from "./viewer.js";
 import { initLibrary, renderLibrary } from "./library.js";
 import { initInspector, renderInspector } from "./inspector.js";
+import { initTransport, renderTransport } from "./transport.js";
 
 let current = null;
 
@@ -20,6 +21,7 @@ function render(snapshot) {
   current = snapshot;
   renderToolbar(snapshot);
   renderTimeline(snapshot);
+  renderTransport(snapshot);
   renderAutoEdit(snapshot);
   renderLibrary(snapshot);
   renderInspector(snapshot);
@@ -62,6 +64,7 @@ async function run(promise) {
 initToolbar(run);
 initProject(render);
 initTimeline(run);
+initTransport(run);
 initAutoEdit(run, render);
 initLibrary(run);
 initInspector(render);

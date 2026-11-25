@@ -1,6 +1,7 @@
 // Timeline: the current section's edit as proportional blocks over the
-// music's beat grid, with a playhead. Read-only for now; manual tweaks and
-// transport controls extend this module later.
+// music's beat grid, with a playhead. Read-only for now; manual tweaks
+// extend this module later. The transport (transport.js) moves the playhead
+// and owns the ruler's scrubbing.
 //
 // Rendering is plain DOM (absolutely positioned blocks, positions in percent
 // of the content width): 200 segments plus a few hundred beat ticks is a
@@ -69,13 +70,20 @@ export function initTimeline(run) {
   $("timeline-zoom-in").addEventListener("click", () => setZoom(state.zoom * 2));
   $("timeline-zoom-out").addEventListener("click", () => setZoom(state.zoom / 2));
   $("timeline-zoom-fit").addEventListener("click", () => setZoom(1));
-  $("timeline-ruler").addEventListener("click", (e) => {
-    const content = $("timeline-content");
-    const rect = content.getBoundingClientRect();
-    if (rect.width <= 0) return;
-    const frac = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
-    seek(Math.round(frac * Number(content.dataset.span || 0)));
-  });
+}
+
+/** The timeline time under page x coordinate `x`, or null when not shown. */
+export function timeAtClientX(x) {
+  const content = $("timeline-content");
+  const rect = content.getBoundingClientRect();
+  if (rect.width <= 0) return null;
+  const frac = Math.min(1, Math.max(0, (x - rect.left) / rect.width));
+  return Math.round(frac * Number(content.dataset.span || 0));
+}
+
+/** The beat times of the current music, or null while unknown. */
+export function currentBeats() {
+  return state.beats && state.beats.data ? state.beats.data.beats : null;
 }
 
 function setZoom(z) {
@@ -86,16 +94,7 @@ function setZoom(z) {
   $("timeline-zoom-in").disabled = state.zoom >= MAX_ZOOM;
 }
 
-/** Move the playhead and tell the backend (the preview engine follows). */
-export function seek(t) {
-  setPlayhead(t);
-  api.seek(Math.max(0, t)).catch((e) => {
-    // Toast through the shared error path without touching the snapshot.
-    state.run(Promise.reject(e));
-  });
-}
-
-/** Draw the playhead at `t` (also for the transport, later). */
+/** Draw the playhead at `t` (the transport calls it). */
 export function setPlayhead(t) {
   state.position = Math.max(0, t);
   const span = Number($("timeline-content").dataset.span || 0);
