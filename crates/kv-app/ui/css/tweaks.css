@@ -4,6 +4,7 @@
 .tw-volume-value { min-width: 3.5em; font-variant-numeric: tabular-nums; color: var(--text); }
 
 .tw-nudge { display: flex; align-items: center; gap: 4px; }
+.tw-nudge[hidden] { display: none; }
 .tw-nudge button { padding: 1px 8px; }
 .tw-nudge-label { color: var(--text); }
 .tw-hint { margin: 0; color: var(--muted); font-size: 11px; }

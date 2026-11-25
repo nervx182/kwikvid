@@ -215,10 +215,7 @@ mod tests {
 
     fn cuts(s: &Session) -> Vec<i64> {
         let segs = &s.project().sections[0].edit.segments;
-        segs[1..]
-            .iter()
-            .map(|g| g.timeline_start.0 / MS)
-            .collect()
+        segs[1..].iter().map(|g| g.timeline_start.0 / MS).collect()
     }
 
     #[test]
@@ -276,8 +273,14 @@ mod tests {
         // Segment 1 is one beat long: moving its start or end into it by a
         // beat would leave nothing.
         let e = s.nudge_cut(S, 1, 1).unwrap_err();
-        assert!(matches!(e, SessionError::Core(CoreError::CutTooShort { .. })));
-        assert_eq!(e.to_string(), "Moving that cut would make a clip too short.");
+        assert!(matches!(
+            e,
+            SessionError::Core(CoreError::CutTooShort { .. })
+        ));
+        assert_eq!(
+            e.to_string(),
+            "Moving that cut would make a clip too short."
+        );
         assert!(s.nudge_cut(S, 2, -1).is_err());
         assert_eq!(s.snapshot(), before, "a rejected nudge changes nothing");
     }

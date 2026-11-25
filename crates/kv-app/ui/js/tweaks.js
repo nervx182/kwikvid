@@ -98,12 +98,9 @@ function build() {
     state.volumeDragging = false;
     commitVolume(Number(slider.value));
   });
-  window.addEventListener("pointerup", () => {
-    if (!state.volumeDragging) return;
-    // A release without a change event (no movement): back to the state.
-    state.volumeDragging = false;
-    renderVolume();
-  });
+  // The release comes before the change event; the slider keeps its value
+  // until change commits it (a release without movement sends nothing).
+  window.addEventListener("pointerup", () => (state.volumeDragging = false));
 
   // Timeline bar: cut nudge buttons.
   const nudge = el("div", "tw-nudge", "tweaks-nudge");
