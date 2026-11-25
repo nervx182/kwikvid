@@ -330,3 +330,95 @@ fn missing_source_fails_before_creating_the_output() {
     );
     assert!(!out.exists());
 }
+
+/// Every frame of an MP4, decoded to RGBA.
+fn decode_all(backend: &FfmpegBackend, path: &Path) -> Vec<kv_media::VideoFrame> {
+    let mut r = backend
+        .open_video(path, &kv_media::DecodeOptions::default())
+        .unwrap();
+    let mut frames = Vec::new();
+    while let Some(f) = r.next_frame().unwrap() {
+        frames.push(f);
+    }
+    frames
+}
+
+/// A 1 s title over a 1.5 s clip: exported with and without the title,
+/// the titled MP4 has a bright text region in the centre of the opening
+/// frames and none after the title ends.
+#[test]
+fn title_card_is_drawn_over_the_opening_frames() {
+    let music = click_track(120.0, 4.0, 44_100);
+    let root = music.parent().unwrap().to_path_buf();
+    let path = tagged_clip(&ClipSpec {
+        clip: 2,
+        ..ClipSpec::default()
+    });
+    let mut p = Project::new(ProjectId(1));
+    p.media.push(MediaItem {
+        id: MediaId(1),
+        path: rel(&root, &path),
+        duration: us(2.0),
+        kind: MediaKind::Video,
+        hilights: vec![],
+        clip_audio: false,
+        chapters: Vec::new(),
+    });
+    let mut edl = Edl {
+        segments: vec![seg(1, 0.0, 1.5, Transition::Cut)],
+    };
+    edl.repack();
+    p.sections[0].edit = edl;
+
+    let backend = FfmpegBackend::new().unwrap();
+    let run = |p: &Project, name: &str| {
+        let out = out_dir().join(name);
+        let _ = std::fs::remove_file(&out);
+        let report = export(
+            p,
+            Project::DEFAULT_SECTION,
+            &root,
+            &backend,
+            &backend,
+            &out,
+            &settings(),
+            &mut |_| {},
+        )
+        .unwrap();
+        assert_eq!(report.frames, 45);
+        decode_all(&backend, &out)
+    };
+    let plain = run(&p, "untitled.mp4");
+    p.sections[0].title = Some(kv_core::TitleCard {
+        text: "TITLE".into(),
+        duration: us(1.0),
+    });
+    let titled = run(&p, "titled.mp4");
+    assert_eq!((plain.len(), titled.len()), (45, 45));
+
+    // Near-white pixels in the central band (rows 70..110 of 180, the
+    // middle 80 % of the width), where the title sits.
+    let bright = |f: &kv_media::VideoFrame| {
+        let w = f.width as usize;
+        let mut n = 0usize;
+        for y in 70..110usize {
+            for x in 32..288usize {
+                let i = (y * w + x) * 4;
+                if f.data[i..i + 3].iter().all(|&c| c >= 220) {
+                    n += 1;
+                }
+            }
+        }
+        n
+    };
+    let added: Vec<i64> = titled
+        .iter()
+        .zip(&plain)
+        .map(|(t, u)| bright(t) as i64 - bright(u) as i64)
+        .collect();
+    println!("bright pixels added per frame: {added:?}");
+    // Fully shown from 0.3 s to 0.7 s (frames 9..=21): a clear text region.
+    assert!(added[9..=21].iter().all(|&n| n > 30), "{added:?}");
+    // After 1 s (frame 30) plus a frame of encoder slack: no text.
+    assert!(added[31..].iter().all(|&n| n.abs() < 30), "{added:?}");
+}
