@@ -5,7 +5,8 @@
 //! per-feature ones registered from their own module (the timeline's
 //! `get_beats`, the library's `import` and `pick_media`; the transport's
 //! `play`, `pause`, `seek`, `get_transport` and `get_preview_stats`, see
-//! [`transport`]). Each forwards to the
+//! [`transport`]; the music picker's `bundled_tracks`, `pick_music` and
+//! `analyze_music`, see [`music`]). Each forwards to the
 //! session (see [`ipc`]); after every change the backend emits a `kv://state`
 //! event with the new snapshot. Errors come back as `{ "message": "..." }`.
 //! Project files (New, Open, Save, Save As, recent) are in [`project`]; the
@@ -30,6 +31,7 @@ mod blit;
 mod ipc;
 mod library;
 mod menu;
+mod music;
 #[cfg(target_os = "macos")]
 mod native_view;
 mod preview;
@@ -64,7 +66,7 @@ const SMOKE_TIMEOUT: Duration = Duration::from_secs(60);
 /// Send the new state to every window after a successful change.
 /// `snapshot` is a [`Snapshot`] or a [`RegenSnapshot`] (the same keys plus
 /// `manual_edits_replaced` and `regen_error`).
-fn emit_state<R: Runtime, S: Serialize + Clone>(app: &AppHandle<R>, snapshot: &S) {
+pub(crate) fn emit_state<R: Runtime, S: Serialize + Clone>(app: &AppHandle<R>, snapshot: &S) {
     if let Err(e) = app.emit(STATE_EVENT, snapshot) {
         tracing::warn!(error = %e, "could not emit {STATE_EVENT}");
     }
@@ -297,11 +299,16 @@ fn main() -> anyhow::Result<()> {
             transport::seek,
             transport::get_transport,
             transport::get_preview_stats,
+            music::bundled_tracks,
+            music::pick_music,
+            music::analyze_music
         ])
         .setup(move |app| {
             let root = media_root(app.handle());
             tracing::info!(media_root = %root.display(), "new session");
             app.manage(AppState::new(Session::new(root)));
+            // Before the library's job event thread starts, which reads it.
+            app.manage(music::MusicPicks::default());
             app.manage(library::Library::start(app.handle()));
             let files = ProjectFiles::load(app.path().app_config_dir().ok());
             app.set_menu(menu::build(app.handle(), &files.recent())?)?;

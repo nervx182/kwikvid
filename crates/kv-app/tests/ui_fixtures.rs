@@ -22,7 +22,7 @@ use std::sync::Arc;
 use kv_audio::MusicAnalysis;
 use kv_core::{
     ChapterRef, Command, Edl, MediaId, MediaItem, MediaKind, Micros, MusicRef, Project, RangeRef,
-    Segment, Speed, TargetLength, Transition,
+    Segment, Speed, StylePreset, TargetLength, TitleCard, Transition,
 };
 use kv_session::regen::RegenSnapshot;
 use kv_session::{ImportReport, Session, Snapshot};
@@ -259,6 +259,49 @@ fn autoedit_fixtures() -> Vec<(&'static str, String)> {
     ]
 }
 
+/// - `styles-smooth`: `autoedit-ready` with the Smooth preset chosen
+///   (`SetStyle`, applied with a regenerate).
+/// - `styles-titled`: `styles-smooth` with the title "Lake day" for 3 s.
+fn styles_fixtures() -> Vec<(&'static str, String)> {
+    let (music, analysis) = long_song();
+    let mut s = session_with_clips();
+    s.apply(clip(4, "GX010004.MP4", 20)).expect("clip 4");
+    s.apply(Command::SetMusic {
+        section: S,
+        music: Some(music.clone()),
+    })
+    .expect("music");
+    s.set_music_analysis(music.path.clone(), analysis);
+    let source = s.analyses();
+    s.apply_and_regenerate(fixed(15), &source).expect("15 s");
+    let smooth = s
+        .apply_and_regenerate(
+            Command::SetStyle {
+                section: S,
+                style: StylePreset::Smooth,
+            },
+            &source,
+        )
+        .expect("smooth");
+    assert!(smooth.regen_error.is_none(), "{:?}", smooth.regen_error);
+    let titled = s
+        .apply_and_regenerate(
+            Command::SetTitleCard {
+                section: S,
+                title: Some(TitleCard {
+                    text: "Lake day".into(),
+                    duration: Micros(3 * SEC),
+                }),
+            },
+            &source,
+        )
+        .expect("title");
+    vec![
+        ("styles-smooth", render(&smooth)),
+        ("styles-titled", render(&titled)),
+    ]
+}
+
 /// The library fixture: a 75 s clip with HiLights at 15 s and 60 s, a
 /// 10 s clip without any, and a chaptered 40 s recording (two 20 s
 /// chapters) with a HiLight at 30 s.
@@ -473,6 +516,22 @@ fn fixtures() -> Vec<(&'static str, Snapshot)> {
         })
         .expect("remove");
 
+    // The music picker: the song set (what the backend applies when its
+    // analysis is done), then removed again.
+    let mut s = session();
+    let music_set = s
+        .apply(Command::SetMusic {
+            section: S,
+            music: Some(song()),
+        })
+        .expect("set music");
+    let music_removed = s
+        .apply(Command::SetMusic {
+            section: S,
+            music: None,
+        })
+        .expect("remove music");
+
     vec![
         ("initial", initial),
         ("edited", edited),
@@ -485,6 +544,8 @@ fn fixtures() -> Vec<(&'static str, Snapshot)> {
         ("timeline-edit", timeline_edit()),
         ("library", library),
         ("library-removed", library_removed),
+        ("music-set", music_set),
+        ("music-removed", music_removed),
     ]
 }
 
@@ -497,6 +558,7 @@ fn all_fixtures() -> Vec<(&'static str, String)> {
     all.extend(other_fixtures());
     all.extend(autoedit_fixtures());
     all.extend(inspector_fixtures());
+    all.extend(styles_fixtures());
     all
 }
 
