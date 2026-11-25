@@ -3,14 +3,16 @@
 //! Each test runs the binary inside a temporary directory holding a click
 //! track (`song.wav`) and empty clip files (`clips/*.mp4`); clip durations come
 //! from `--durations`, so no real video is needed. Paths are relative to that
-//! directory, which keeps the JSON snapshots machine independent.
+//! directory, which keeps the JSON snapshots machine independent. The render
+//! tests copy real tagged clips (`kv_testkit::tagged_clip_set`) into it.
 
 use std::fs;
 use std::path::Path;
 
 use assert_cmd::cargo::cargo_bin_cmd;
 use assert_cmd::Command;
-use kv_testkit::{click_track, DEFAULT_SAMPLE_RATE};
+use kv_media::{FfmpegBackend, MediaBackend};
+use kv_testkit::{click_track, tagged_clip_set, DEFAULT_SAMPLE_RATE};
 use serde_json::Value;
 use tempfile::TempDir;
 
@@ -293,22 +295,6 @@ fn errors_are_readable_with_exit_code_1() {
             },
             "error: cannot probe clip \"clips/a.mp4\"",
         ),
-        (
-            {
-                let mut c = kwikvid(d);
-                c.args([
-                    "edit",
-                    "--clips",
-                    "clips",
-                    "--music",
-                    "song.wav",
-                    "--durations",
-                    DURATIONS,
-                ]);
-                c
-            },
-            "pass --dry-run",
-        ),
     ];
     for (mut cmd, expected) in cases {
         let err = stderr_of_failure(&mut cmd);
@@ -342,8 +328,232 @@ fn usage_errors_exit_with_code_2() {
             "--dry-run",
         ][..],
         &["edit", "--music", "song.wav", "--dry-run"][..],
+        // Neither --out nor --dry-run.
+        &["edit", "--clips", "clips", "--music", "song.wav"][..],
+        &[
+            "edit", "--clips", "clips", "--music", "song.wav", "--out", "o.mp4", "--size", "1920",
+        ][..],
+        &[
+            "edit", "--clips", "clips", "--music", "song.wav", "--out", "o.mp4", "--fps", "29.97",
+        ][..],
         &["frobnicate"][..],
     ] {
         kwikvid(dir.path()).args(args).assert().failure().code(2);
     }
+}
+
+/// A minimal MP4 with GoPro HiLights (`moov/udta/HMMT`, milliseconds), the
+/// box `kv_gopro::read_hilights` reads (ADR 0006).
+fn hilight_mp4(hilights_ms: &[u32]) -> Vec<u8> {
+    fn bx(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
+        let mut v = ((body.len() + 8) as u32).to_be_bytes().to_vec();
+        v.extend_from_slice(kind);
+        v.extend_from_slice(body);
+        v
+    }
+    let mut hmmt = (hilights_ms.len() as u32).to_be_bytes().to_vec();
+    for ms in hilights_ms {
+        hmmt.extend_from_slice(&ms.to_be_bytes());
+    }
+    let mut file = bx(b"ftyp", b"mp41\0\0\0\0mp41");
+    file.extend(bx(b"moov", &bx(b"udta", &bx(b"HMMT", &hmmt))));
+    file
+}
+
+#[test]
+fn dry_run_json_shows_hilights() {
+    let dir = workspace();
+    // Out of order and one past the clip's 8 s end, which is dropped.
+    fs::write(
+        dir.path().join("clips/a.mp4"),
+        hilight_mp4(&[5_000, 1_500, 9_000]),
+    )
+    .unwrap();
+    let v = json(&mut edit(dir.path(), &["--length", "8s", "--json"]));
+    let media = &v["project"]["media"];
+    assert_eq!(
+        media[0]["hilights"],
+        serde_json::json!([1_500_000, 5_000_000])
+    );
+    // Empty (non-GoPro) files just have none.
+    assert_eq!(media[1]["hilights"], serde_json::json!([]));
+}
+
+/// Copy `n` tagged clips (2 s each, creation times a minute apart in
+/// `GX01000k.MP4` order) into `dir` under `names`.
+fn copy_tagged_clips(dir: &Path, names: &[&str]) {
+    for (src, name) in tagged_clip_set(names.len(), 2.0).iter().zip(names) {
+        fs::copy(src, dir.join(name)).unwrap();
+    }
+}
+
+#[test]
+fn clip_directory_is_in_recording_order_without_proxies() {
+    let dir = workspace();
+    let shot = dir.path().join("shot");
+    fs::create_dir(&shot).unwrap();
+    // Recorded first to last: z.mp4, B.MOV, a.MP4; name order would differ.
+    copy_tagged_clips(&shot, &["z.mp4", "B.MOV", "a.MP4"]);
+    fs::write(shot.join("GL010001.LRV"), b"proxy").unwrap();
+    fs::write(shot.join("GX010001.THM"), b"thumb").unwrap();
+    let v = json(kwikvid(dir.path()).args([
+        "edit",
+        "--clips",
+        "shot",
+        "--music",
+        "song.wav",
+        "--length",
+        "4s",
+        "--dry-run",
+        "--json",
+    ]));
+    let paths: Vec<&str> = v["project"]["media"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(paths, ["shot/z.mp4", "shot/B.MOV", "shot/a.MP4"]);
+}
+
+/// `edit` over three tagged clips rendering a 4 s edit at `size` to `out`
+/// with extra arguments.
+fn render_at(dir: &Path, size: &str, out: &str, extra: &[&str]) -> Command {
+    copy_tagged_clips(dir, &["c1.mp4", "c2.mp4", "c3.mp4"]);
+    let mut cmd = kwikvid(dir);
+    cmd.args([
+        "edit", "--clips", "c1.mp4", "c2.mp4", "c3.mp4", "--music", "song.wav", "--length", "4s",
+        "--size", size, "--out", out,
+    ])
+    .args(extra);
+    cmd
+}
+
+/// [`render_at`] 320x180.
+fn render(dir: &Path, out: &str, extra: &[&str]) -> Command {
+    render_at(dir, "320x180", out, extra)
+}
+
+/// One frame at 30 fps, in microseconds.
+const FRAME_US: i64 = 1_000_000 / 30;
+
+#[test]
+fn edit_renders_an_mp4_with_the_song() {
+    let dir = workspace();
+    let out = render(dir.path(), "out.mp4", &[])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    assert!(out.stdout.is_empty());
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    // Not a terminal: periodic lines, then the summary.
+    assert!(stderr.contains("rendering   0% (1/120 frames"), "{stderr}");
+    assert!(
+        stderr.contains("rendering 100% (120/120 frames"),
+        "{stderr}"
+    );
+    // `wrote out.mp4: 3.988 s, encoder libx264, 0.5 s elapsed`: the edit
+    // ends on the detected beat nearest 4 s.
+    let summary = stderr.lines().last().unwrap();
+    let length: f64 = summary
+        .strip_prefix("wrote out.mp4: ")
+        .and_then(|r| r.split_once(" s, encoder "))
+        .map(|(len, _)| len.parse().unwrap())
+        .unwrap_or_else(|| panic!("{summary}"));
+    assert!((length - 4.0).abs() * 1e6 <= FRAME_US as f64, "{summary}");
+    assert!(summary.ends_with(" s elapsed"), "{summary}");
+
+    let info = FfmpegBackend::new()
+        .unwrap()
+        .probe(&dir.path().join("out.mp4"))
+        .unwrap();
+    let video = info.video.expect("video stream");
+    let audio = info.audio.expect("audio stream");
+    assert_eq!(video.codec, "h264");
+    assert_eq!((video.width, video.height), (320, 180));
+    assert_eq!(audio.codec, "aac");
+    assert!(
+        (info.duration.0 - 4_000_000).abs() <= FRAME_US,
+        "duration {:?}",
+        info.duration
+    );
+    // No temporary file is left behind.
+    assert!(!dir.path().join(".out.mp4.partial").exists());
+}
+
+#[test]
+fn render_refuses_to_replace_without_overwrite() {
+    let dir = workspace();
+    fs::write(dir.path().join("out.mp4"), b"keep me").unwrap();
+    let out = render(dir.path(), "out.mp4", &["--quiet"])
+        .assert()
+        .failure()
+        .code(2)
+        .get_output()
+        .clone();
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("error: out.mp4 already exists; pass --overwrite"),
+        "{stderr}"
+    );
+    assert_eq!(fs::read(dir.path().join("out.mp4")).unwrap(), b"keep me");
+
+    let out = render(
+        dir.path(),
+        "out.mp4",
+        &["--overwrite", "--quiet", "--fps", "30000/1001"],
+    )
+    .assert()
+    .success()
+    .get_output()
+    .clone();
+    assert!(out.stderr.is_empty(), "--quiet prints nothing");
+    let info = FfmpegBackend::new()
+        .unwrap()
+        .probe(&dir.path().join("out.mp4"))
+        .unwrap();
+    assert_eq!(
+        info.video.unwrap().fps,
+        kv_media::Rational::new(30000, 1001)
+    );
+}
+
+#[test]
+fn failed_render_leaves_no_file() {
+    let dir = workspace();
+    // Odd sizes cannot be encoded: rejected before any work.
+    let err = String::from_utf8(
+        render_at(dir.path(), "321x180", "odd.mp4", &[])
+            .assert()
+            .failure()
+            .code(1)
+            .get_output()
+            .stderr
+            .clone(),
+    )
+    .unwrap();
+    assert!(
+        err.contains("error: invalid --size or --fps for export"),
+        "{err}"
+    );
+    assert!(!dir.path().join("odd.mp4").exists());
+
+    // The encoder cannot create the file: fails after the edit is built.
+    let err = String::from_utf8(
+        render(dir.path(), "missing/out.mp4", &[])
+            .assert()
+            .failure()
+            .code(1)
+            .get_output()
+            .stderr
+            .clone(),
+    )
+    .unwrap();
+    assert!(
+        err.starts_with("error: cannot render missing/out.mp4"),
+        "{err}"
+    );
+    assert!(!err.contains("panicked"), "{err}");
+    assert!(!dir.path().join("missing").exists());
 }

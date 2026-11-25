@@ -98,6 +98,7 @@ fn replace_edl(inp: &EditInput, edl: Edl) -> Result<(), kv_core::CoreError> {
                 kind: MediaKind::Video,
                 hilights: m.hilights.clone(),
                 clip_audio: false,
+                chapters: Vec::new(),
             },
         })?;
     }

@@ -1,8 +1,10 @@
 //! Parsers for the small value syntaxes on the command line: times, target
-//! lengths, `CLIP@START-END` ranges and `CLIP=SECONDS` durations. Pure
+//! lengths, `CLIP@START-END` ranges, `CLIP=SECONDS` durations, output sizes
+//! and frame rates. Pure
 //! string handling; clip names are resolved against the clip list later.
 
 use kv_core::Micros;
+use kv_media::Rational;
 
 /// `--length`: a fixed length or the whole song.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -141,6 +143,37 @@ pub fn parse_clip_duration(s: &str) -> Result<ClipDuration, String> {
     })
 }
 
+/// Parse `--size`: `WIDTHxHEIGHT` in pixels, e.g. `1920x1080`. Whether the
+/// encoder accepts it (even, not too large) is checked with the other export
+/// settings.
+pub fn parse_size(s: &str) -> Result<(u32, u32), String> {
+    let bad = || format!("invalid size {s:?}: expected WIDTHxHEIGHT like 1920x1080");
+    let (w, h) = s.trim().split_once(['x', 'X']).ok_or_else(bad)?;
+    let dim = |v: &str| {
+        v.parse::<u32>()
+            .ok()
+            .filter(|&n| n > 0 && v.bytes().all(|c| c.is_ascii_digit()))
+    };
+    dim(w).zip(dim(h)).ok_or_else(bad)
+}
+
+/// Parse `--fps`: a whole number (`30`) or a fraction (`30000/1001`).
+pub fn parse_fps(s: &str) -> Result<Rational, String> {
+    let bad = || format!("invalid frame rate {s:?}: expected a number like 30 or 30000/1001");
+    let t = s.trim();
+    let (num, den) = t.split_once('/').unwrap_or((t, "1"));
+    let int = |v: &str| {
+        v.parse::<i32>()
+            .ok()
+            .filter(|&n| n > 0 && v.bytes().all(|c| c.is_ascii_digit()))
+    };
+    let (num, den) = int(num).zip(int(den)).ok_or_else(bad)?;
+    if f64::from(num) / f64::from(den) > 1000.0 {
+        return Err(bad());
+    }
+    Ok(Rational::new(num, den))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,5 +240,32 @@ mod tests {
         assert!(parse_clip_duration("a.mp4").is_err());
         assert!(parse_clip_duration("a.mp4=0").is_err());
         assert!(parse_clip_duration("=3").is_err());
+    }
+
+    #[test]
+    fn sizes() {
+        assert_eq!(parse_size("1920x1080"), Ok((1920, 1080)));
+        assert_eq!(parse_size("320X180"), Ok((320, 180)));
+        for bad in [
+            "",
+            "1920",
+            "1920x",
+            "x1080",
+            "0x10",
+            "-2x4",
+            "1.5x2",
+            "1920*1080",
+        ] {
+            assert!(parse_size(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn frame_rates() {
+        assert_eq!(parse_fps("30"), Ok(Rational::new(30, 1)));
+        assert_eq!(parse_fps("30000/1001"), Ok(Rational::new(30000, 1001)));
+        for bad in ["", "0", "29.97", "30/0", "/2", "-30", "5000"] {
+            assert!(parse_fps(bad).is_err(), "{bad:?}");
+        }
     }
 }

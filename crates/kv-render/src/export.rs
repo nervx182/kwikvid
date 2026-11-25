@@ -529,6 +529,7 @@ mod tests {
                 kind: MediaKind::Video,
                 hilights: vec![],
                 clip_audio: false,
+                chapters: Vec::new(),
             });
         }
         let mut edl = Edl {

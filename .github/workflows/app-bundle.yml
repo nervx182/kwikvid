@@ -1,0 +1,138 @@
+# Unsigned macOS .app bundle of kv-app (issue #63), for the owner to try builds
+# on their Mac. Not part of the merge gate: runs on pushes to main that touch
+# app code, and by hand (Actions > app-bundle > Run workflow).
+# The zipped .app goes to a short-lived artifact and, because artifact storage
+# is an account-wide quota that can be full, also to the `nightly` prerelease
+# (replaced on every run; releases do not count against artifact storage).
+name: app-bundle
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/**"
+      - "Cargo.lock"
+      - ".github/workflows/app-bundle.yml"
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "Also publish the zip as the `nightly` prerelease"
+        type: boolean
+        default: true
+
+concurrency:
+  group: app-bundle-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  ZIP_NAME: kwikvid-macos-arm64
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write # create/replace the `nightly` prerelease
+    steps:
+      - uses: actions/checkout@v5
+      # Homebrew's ffmpeg is a GPL build: fine for CI, never for shipping (ADR 0005).
+      - name: Install FFmpeg
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+          HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: "1"
+        run: brew install ffmpeg pkgconf
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build unsigned .app
+        working-directory: crates/kv-app
+        # tauri.conf.json keeps `bundle.active: false` so plain `cargo build`
+        # never bundles; switch it on for this build only.
+        run: >-
+          npx --yes @tauri-apps/cli@2.12.6 build --ci --bundles app
+          --config '{"bundle":{"active":true}}'
+          -- --locked
+      - name: Locate bundle
+        id: app
+        run: |
+          APP=$(find target/release/bundle/macos -maxdepth 1 -name '*.app' | head -1)
+          test -n "$APP"
+          BIN=$(find "$APP/Contents/MacOS" -type f -perm -u+x | head -1)
+          test -n "$BIN"
+          echo "app=$APP" >> "$GITHUB_OUTPUT"
+          echo "bin=$BIN" >> "$GITHUB_OUTPUT"
+          echo "Linked libraries:"; otool -L "$BIN"
+          # A binary linked against Homebrew (GPL) FFmpeg must not be published
+          # as a public release (ADR 0005); it still goes to the artifact.
+          if otool -L "$BIN" | grep -q 'libav'; then
+            echo "links_ffmpeg=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "links_ffmpeg=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Smoke test (launch the bundled binary)
+        timeout-minutes: 3
+        run: |
+          set +e
+          "${{ steps.app.outputs.bin }}" --smoke
+          code=$?
+          echo "kwikvid --smoke exited with code $code"
+          test "$code" -eq 0
+      - name: Zip .app (keeps symlinks and permissions)
+        run: ditto -c -k --keepParent "${{ steps.app.outputs.app }}" "$RUNNER_TEMP/$ZIP_NAME.zip"
+      - uses: actions/upload-artifact@v4
+        id: upload
+        # Artifact storage is an account-wide quota that other repos also use;
+        # a full quota must not fail the build (the release below still runs).
+        continue-on-error: true
+        with:
+          name: kwikvid-macos-arm64
+          path: ${{ runner.temp }}/kwikvid-macos-arm64.zip
+          retention-days: 7
+          if-no-files-found: error
+      - name: Publish `nightly` prerelease
+        id: release
+        if: >-
+          steps.app.outputs.links_ffmpeg == 'false' &&
+          (github.event_name == 'push' || inputs.release)
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete nightly --yes --cleanup-tag || true
+          {
+            echo "Unsigned Apple Silicon build of \`${GITHUB_REF_NAME}\` at ${GITHUB_SHA}, replaced on every run."
+            echo
+            echo "Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo
+            echo "How to open it: see crates/kv-app/README.md (\"Download a CI build\")."
+          } > "$RUNNER_TEMP/notes.md"
+          gh release create nightly "$RUNNER_TEMP/$ZIP_NAME.zip" \
+            --prerelease --target "$GITHUB_SHA" \
+            --title "nightly ($GITHUB_REF_NAME, ${GITHUB_SHA::7})" \
+            --notes-file "$RUNNER_TEMP/notes.md"
+      - name: Job summary
+        if: always()
+        run: |
+          RUN_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          {
+            echo "### kwikvid.app (unsigned, macOS arm64)"
+            echo "- Ref: \`$GITHUB_REF_NAME\` @ \`$GITHUB_SHA\`"
+            echo "- Links Homebrew FFmpeg: \`${{ steps.app.outputs.links_ffmpeg || 'unknown' }}\`"
+            case "${{ steps.upload.outcome }}" in
+              success) echo "- Artifact \`$ZIP_NAME\` (7 days): ${{ steps.upload.outputs.artifact-url }}" ;;
+              failure) echo "- Artifact upload **failed** (storage quota full?), see the release below" ;;
+              *) echo "- Artifact upload: ${{ steps.upload.outcome || 'not run' }}" ;;
+            esac
+            case "${{ steps.release.outcome }}" in
+              success) echo "- Release: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/nightly" ;;
+              failure) echo "- Release \`nightly\` **failed**, see the step log" ;;
+              *) echo "- Release: skipped (dispatch input, or the binary links GPL FFmpeg)" ;;
+            esac
+            echo "- How to open: crates/kv-app/README.md, \"Download a CI build\""
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Fail if the zip was published nowhere
+        if: steps.upload.outcome != 'success' && steps.release.outcome != 'success'
+        run: |
+          echo "::error::Neither the artifact upload nor the nightly release succeeded"
+          exit 1

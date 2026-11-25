@@ -56,6 +56,9 @@ fn core_message(e: &CoreError) -> &'static str {
         CoreError::DuplicateMedia(_) => "That clip is already in the project.",
         CoreError::InvalidDuration(_) => "That file has no playable length.",
         CoreError::InvalidPath(_) => "That file's location can't be stored in the project.",
+        CoreError::ChapterPathMismatch { .. } | CoreError::ChapterDurationMismatch { .. } => {
+            "That recording's chapter files don't match the clip."
+        }
         CoreError::HilightOutOfRange { .. } => "That clip has a HiLight past its end.",
         CoreError::InvalidRange { .. } => "That range is outside the clip.",
         CoreError::AlreadyPinned(_) => "That moment is already forced in.",

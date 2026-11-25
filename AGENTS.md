@@ -41,6 +41,22 @@ large-data or benchmark tests belong in the full regression
 (`.github/workflows/regression.yml`, manually dispatched): mark them
 `#[ignore = "regression"]`.
 
+## UI tests
+
+The kv-app webview UI (`crates/kv-app/ui/`) is tested with Playwright in
+Chromium and WebKit against a mock backend (ADR 0011); the `ui-tests`
+workflow runs them on PRs that touch the UI. One spec per feature:
+`crates/kv-app/ui-tests/tests/<feature>.spec.js`, using the `mock` fixture
+from `fixtures.js`. Run locally:
+
+```sh
+cd crates/kv-app/ui-tests && npm ci && npx playwright install --with-deps && npx playwright test
+```
+
+Snapshot fixtures are generated from real `kv_session::Snapshot` values;
+after changing `Snapshot` or `Project`, run
+`KV_UPDATE_UI_FIXTURES=1 cargo test -p kv-app --test ui_fixtures`.
+
 ## Full regression suite
 
 Slow tests, tests on real footage and benchmarks run only in

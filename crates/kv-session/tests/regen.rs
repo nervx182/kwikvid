@@ -48,6 +48,7 @@ fn add_clip(id: u64) -> Command {
             kind: MediaKind::Video,
             hilights: vec![secs(2), secs(7)],
             clip_audio: false,
+            chapters: Vec::new(),
         },
     }
 }

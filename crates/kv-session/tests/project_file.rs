@@ -59,6 +59,7 @@ fn session_with_media(root: &Path) -> Session {
                 kind: MediaKind::Video,
                 hilights: vec![secs(2)],
                 clip_audio: false,
+                chapters: Vec::new(),
             },
         })
         .unwrap();
@@ -356,6 +357,7 @@ fn save_as_onto_another_drive_fails_without_changes() {
             kind: MediaKind::Video,
             hilights: vec![],
             clip_audio: false,
+            chapters: Vec::new(),
         },
     })
     .unwrap();
@@ -382,6 +384,7 @@ fn rebase_errors_surface_as_path_errors() {
             kind: MediaKind::Video,
             hilights: vec![],
             clip_audio: false,
+            chapters: Vec::new(),
         },
     })
     .unwrap();

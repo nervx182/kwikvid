@@ -223,6 +223,7 @@ impl KwikvidServer {
             kind: p.kind.into(),
             hilights: p.hilights_us.into_iter().map(Micros).collect(),
             clip_audio: false,
+            chapters: Vec::new(),
         };
         tracing::debug!(?item, "adding media");
         match history.apply(Command::AddMedia { item }) {

@@ -2467,10 +2467,14 @@ dependencies = [
  "kv-core",
  "kv-gopro",
  "kv-media",
+ "kv-render",
  "kv-testkit",
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror 2.0.21",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -2490,6 +2494,7 @@ dependencies = [
  "kv-core",
  "proptest",
  "thiserror 2.0.21",
+ "tracing",
 ]
 
 [[package]]
@@ -2543,8 +2548,13 @@ dependencies = [
 name = "kv-session"
 version = "0.0.1"
 dependencies = [
+ "kv-audio",
  "kv-autoedit",
+ "kv-cache",
  "kv-core",
+ "kv-gopro",
+ "kv-media",
+ "kv-testkit",
  "serde",
  "serde_json",
  "tempfile",

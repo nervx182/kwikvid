@@ -10,6 +10,9 @@
 //!   sample count and average rate.
 //! - [`group_chapters`]: groups chaptered recordings (`GX01xxxx.MP4`,
 //!   `GX02xxxx.MP4`, ...) by file name, without touching the file system.
+//! - [`media_item_from_group`]: builds one (chaptered) `MediaItem` per
+//!   recording from caller-probed files, merging the chapters' HiLights with
+//!   [`merge_chapter_hilights`].
 //!
 //! Only the `moov` box and the GPMF samples are read, never the video data,
 //! so the functions are cheap on multi-gigabyte files. The approach and the
@@ -19,6 +22,7 @@
 mod chapters;
 mod error;
 mod gpmf;
+mod import;
 mod mp4;
 
 use std::fs::File;
@@ -30,6 +34,10 @@ use kv_core::Micros;
 pub use chapters::{group_chapters, ChapterGroup, PREFIX_GH, PREFIX_GOPR, PREFIX_GX};
 pub use error::{GoproError, Result};
 pub use gpmf::{FourCc, StreamInfo};
+pub use import::{
+    media_item_from_files, media_item_from_group, merge_chapter_hilights,
+    merge_chapter_hilights_as, HilightOffsets, ProbedFile,
+};
 
 /// Read the HiLight tags of a GoPro MP4 file, in ascending order.
 ///
