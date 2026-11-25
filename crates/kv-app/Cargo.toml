@@ -24,6 +24,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "ansi"] }
 
 [dev-dependencies]
+kv-audio = { path = "../kv-audio" }
 serde_json.workspace = true
 
 [lints]

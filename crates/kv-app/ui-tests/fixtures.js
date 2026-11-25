@@ -34,11 +34,14 @@ class Mock {
     this.page = page;
   }
 
-  /** Load the UI with `snapshot` as the backend state (default: initial). */
-  async open(snapshot = snapshots.initial) {
-    await this.page.addInitScript((state) => {
-      window.__kvMockInit = { state };
-    }, snapshot);
+  /**
+   * Load the UI with `snapshot` as the backend state (default: initial).
+   * `beats`: what get_beats answers (default null, "not analysed yet").
+   */
+  async open(snapshot = snapshots.initial, { beats = null } = {}) {
+    await this.page.addInitScript((init) => {
+      window.__kvMockInit = init;
+    }, { state: snapshot, beats });
     await this.page.goto("/");
     // Fails fast if the real api.js was served instead of the mock.
     await this.page.waitForFunction(() => window.__kvMock !== undefined);
@@ -51,11 +54,17 @@ class Mock {
 
   /**
    * The calls the UI made, in order, as { command, args? }; command is
-   * "apply", "undo", "redo" or "get_state". Pass a name to filter.
+   * "apply", "undo", "redo", "get_state", "get_beats" or "seek". Pass a
+   * name to filter.
    */
   async commands(name) {
     const all = await this.page.evaluate(() => window.__kvMock.commands);
     return name === undefined ? all : all.filter((c) => c.command === name);
+  }
+
+  /** Set what get_beats answers from now on (null: not analysed yet). */
+  async beats(beats) {
+    await this.page.evaluate((b) => (window.__kvMock.beats = b), beats);
   }
 
   /** The next `command` call resolves to `snapshot` (it becomes the state). */

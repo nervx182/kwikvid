@@ -4,6 +4,7 @@
 import * as api from "./api.js";
 import { showToast } from "./toast.js";
 import { initToolbar, renderToolbar } from "./toolbar.js";
+import { initTimeline, renderTimeline } from "./timeline.js";
 
 let current = null;
 
@@ -13,6 +14,7 @@ function render(snapshot) {
   if (current && snapshot.revision < current.revision) return;
   current = snapshot;
   renderToolbar(snapshot);
+  renderTimeline(snapshot);
   renderSummary(snapshot);
 }
 
@@ -49,6 +51,7 @@ async function run(promise) {
 }
 
 initToolbar(run);
+initTimeline(run);
 api.onState(render);
 run(api.getState());
 
