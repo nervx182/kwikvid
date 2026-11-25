@@ -79,18 +79,22 @@ test("scrubbing moves the head and shows the nearest filmstrip frame at once", a
   await select(page, 1);
   const s = await strip(page).boundingBox();
   const y = s.y + s.height / 2;
-  await page.mouse.click(s.x + s.width * 0.5, y);
+  // Aim at cell centres ((i + 0.5) / 12), never at a cell boundary: WebKit
+  // delivers whole-pixel mouse coordinates, so a click exactly on a boundary
+  // can land in either cell.
+  const centre = (cell) => s.x + (s.width * (cell + 0.5)) / 12;
+  await page.mouse.click(centre(6), y);
   const t = Number(await head(page).getAttribute("data-time"));
-  expect(Math.abs(t - 37.5 * S)).toBeLessThan(0.01 * 75 * S);
+  expect(Math.abs(t - (6.5 / 12) * 75 * S)).toBeLessThan(0.01 * 75 * S);
   await expect(page.getByTestId("inspector-frame")).toHaveAttribute("data-cell", "6");
   await expect(page.getByTestId("inspector-frame")).toHaveAttribute("src", "kvthumb://1/6");
-  await expect(page.getByTestId("inspector-time")).toContainText(/^0:3[78]\.\d \/ 1:15\.0$/);
+  await expect(page.getByTestId("inspector-time")).toContainText(/^0:40\.\d \/ 1:15\.0$/);
 
   // Dragging follows the pointer.
-  await page.mouse.move(s.x + s.width * 0.1, y);
+  await page.mouse.move(centre(1), y);
   await page.mouse.down();
-  await page.mouse.move(s.x + s.width * 0.5, y, { steps: 3 });
-  await page.mouse.move(s.x + s.width * 0.9, y, { steps: 3 });
+  await page.mouse.move(centre(6), y, { steps: 3 });
+  await page.mouse.move(centre(10), y, { steps: 3 });
   await page.mouse.up();
   await expect(page.getByTestId("inspector-frame")).toHaveAttribute("data-cell", "10");
 
