@@ -313,3 +313,88 @@ fn timing_1080p_two_layer_render_and_readback() {
         );
     }
 }
+
+/// The title card overlay (#56): a rasterised title alpha-blended over a
+/// 4:3-into-16:9 crossfade (and over black) matches `kv_render::overlay`.
+#[test]
+fn title_overlay_matches_cpu() {
+    let Some(ctx) = ctx() else { return };
+    let (w, h) = (320, 180);
+    let title = kv_render::title::rasterize(
+        &kv_core::TitleCard {
+            text: "Summer 2026".into(),
+            duration: Micros(2_000_000),
+        },
+        w,
+        h,
+    );
+    let a = tagged(2, 3, 160, 120);
+    let b = noise(w, h, 9);
+    for (layers, opacity, what) in [
+        (vec![(&a, 0.5), (&b, 0.5)], 1.0, "crossfade, opaque title"),
+        (vec![(&a, 1.0)], 0.4, "fill, fading title"),
+        (vec![], 0.8, "black, title"),
+    ] {
+        let mut want = cpu(&layers, w, h, Fit::Fill);
+        kv_render::overlay(&mut want, &title, opacity).unwrap();
+
+        let mut c = GpuCompositor::new(&ctx, w, h).unwrap();
+        let ids: Vec<_> = layers
+            .iter()
+            .map(|&(f, weight)| (c.upload(f).unwrap(), weight))
+            .collect();
+        let t = c.upload(&title).unwrap();
+        c.render_with_overlays(&ids, &[(t, opacity)], Fit::Fill)
+            .unwrap();
+        let got = c.read_back().unwrap();
+
+        // The 4:3 layer is cropped top and bottom only (full width): skip
+        // the first and last row (crop edges), compare everything else.
+        let mut max = 0u8;
+        for y in 1..h as usize - 1 {
+            for x in 0..w as usize {
+                let i = (y * w as usize + x) * 4;
+                for ch in 0..4 {
+                    let d = got.data[i + ch].abs_diff(want.data[i + ch]);
+                    assert!(
+                        d <= TOLERANCE,
+                        "{what}: ({x}, {y}) channel {ch}: gpu {} cpu {}",
+                        got.data[i + ch],
+                        want.data[i + ch]
+                    );
+                    max = max.max(d);
+                }
+            }
+        }
+        println!("{what}: max channel difference {max}");
+        // The title is really there: many pixels differ from no overlay.
+        let plain = cpu(&layers, w, h, Fit::Fill);
+        let changed = got
+            .data
+            .chunks_exact(4)
+            .zip(plain.data.chunks_exact(4))
+            .filter(|(g, p)| g[0].abs_diff(p[0]) > 20)
+            .count();
+        println!("{what}: {changed} pixels show the title");
+        assert!(
+            changed > 150,
+            "{what}: only {changed} pixels show the title"
+        );
+    }
+}
+
+#[test]
+fn overlay_of_the_wrong_size_is_rejected() {
+    let Some(ctx) = ctx() else { return };
+    let mut c = GpuCompositor::new(&ctx, 8, 8).unwrap();
+    let small = c
+        .upload(&VideoFrame::solid(Micros(0), 4, 4, [255; 4]))
+        .unwrap();
+    assert!(matches!(
+        c.render_with_overlays(&[], &[(small, 1.0)], Fit::Fill),
+        Err(GpuError::InvalidSize {
+            which: "overlay",
+            ..
+        })
+    ));
+}

@@ -32,6 +32,9 @@ exceptions = [
   { crate = "ffmpeg-next", allow = ["WTFPL"] },
   { crate = "ffmpeg-sys-next", allow = ["WTFPL"] },
 ]
+# Fonts are files, not crates, so cargo-deny never sees them: the bundled
+# title font (assets/fonts/, SIL OFL 1.1) was checked by hand; licence and
+# source are recorded in assets/fonts/SOURCES.md.
 # Our own crates are unpublished and unlicensed for now.
 [licenses.private]
 ignore = true
