@@ -331,6 +331,227 @@ fn missing_source_fails_before_creating_the_output() {
     assert!(!out.exists());
 }
 
+/// Channel 0 of the audio track of `path`, decoded by FFmpeg (which honours
+/// the AAC priming in the MP4 edit list, so sample 0 is time 0).
+fn decode_audio_channel0(path: &Path) -> Vec<f32> {
+    let mut ictx = ff::format::input(path).unwrap();
+    let stream = ictx.streams().best(ff::media::Type::Audio).unwrap();
+    let index = stream.index();
+    let mut decoder = ff::codec::context::Context::from_parameters(stream.parameters())
+        .unwrap()
+        .decoder()
+        .audio()
+        .unwrap();
+    let mut out = Vec::new();
+    let mut frame = ff::frame::Audio::empty();
+    let mut receive = |decoder: &mut ff::decoder::Audio, out: &mut Vec<f32>| {
+        while decoder.receive_frame(&mut frame).is_ok() {
+            assert!(
+                matches!(
+                    frame.format(),
+                    ff::format::Sample::F32(ff::format::sample::Type::Planar)
+                ),
+                "AAC decodes to planar f32, got {:?}",
+                frame.format()
+            );
+            out.extend_from_slice(&frame.plane::<f32>(0)[..frame.samples()]);
+        }
+    };
+    for (s, packet) in ictx.packets() {
+        if s.index() == index {
+            decoder.send_packet(&packet).unwrap();
+            receive(&mut decoder, &mut out);
+        }
+    }
+    decoder.send_eof().unwrap();
+    receive(&mut decoder, &mut out);
+    out
+}
+
+/// Amplitude of the `freq` Hz component of `x` at `RATE` (Hann-windowed
+/// single-bin DFT, normalised so a sine of amplitude `a` gives `a`).
+fn tone_level(x: &[f32], freq: f64) -> f64 {
+    let n = x.len() as f64;
+    let (mut re, mut im, mut wsum) = (0.0, 0.0, 0.0);
+    for (i, &v) in x.iter().enumerate() {
+        let w = 0.5 - 0.5 * (std::f64::consts::TAU * i as f64 / n).cos();
+        let ph = std::f64::consts::TAU * freq * i as f64 / f64::from(RATE);
+        re += w * f64::from(v) * ph.cos();
+        im += w * f64::from(v) * ph.sin();
+        wsum += w;
+    }
+    2.0 * (re * re + im * im).sqrt() / wsum
+}
+
+/// Clip audio under a 440 Hz music bed. Media 1 has a 1 kHz tone, media 2
+/// a 2 kHz tone (both with clip audio on); media 3 is media 1's file with
+/// clip audio off. The edit:
+///
+/// | timeline (s) | segment                          |
+/// | ------------ | -------------------------------- |
+/// | 0.0 - 1.0    | media 1, cut                     |
+/// | 0.6 - 1.6    | media 2, 0.4 s crossfade from 1  |
+/// | 1.6 - 2.6    | media 3 (clip audio off), cut    |
+/// | 2.6 - 3.6    | media 1 at speed 50 (muted), cut |
+/// | 3.6 - 4.1    | media 1, cut                     |
+#[test]
+fn clip_audio_is_mixed_under_the_music_following_the_edit() {
+    let tone = |clip: u8, hz: u32, seconds: f64| {
+        tagged_clip(&ClipSpec {
+            clip,
+            seconds,
+            audio: true,
+            audio_hz: hz,
+            ..ClipSpec::default()
+        })
+    };
+    let music = tone(9, 440, 5.0);
+    let clips = [tone(1, 1_000, 2.0), tone(2, 2_000, 2.0)];
+    let root = music.parent().unwrap().to_path_buf();
+    let mut p = Project::new(ProjectId(1));
+    for (id, path, clip_audio) in [
+        (1, &clips[0], true),
+        (2, &clips[1], true),
+        (3, &clips[0], false),
+    ] {
+        p.media.push(MediaItem {
+            id: MediaId(id),
+            path: rel(&root, path),
+            duration: us(2.0),
+            kind: MediaKind::Video,
+            hilights: vec![],
+            clip_audio,
+            chapters: Vec::new(),
+        });
+    }
+    let mut edl = Edl {
+        segments: vec![
+            seg(1, 0.2, 1.2, Transition::Cut),
+            seg(2, 0.2, 1.2, Transition::Crossfade { duration: us(0.4) }),
+            seg(3, 0.2, 1.2, Transition::Cut),
+            Segment {
+                speed: Speed(50),
+                ..seg(1, 0.2, 0.7, Transition::Cut)
+            },
+            seg(1, 1.0, 1.5, Transition::Cut),
+        ],
+    };
+    edl.repack();
+    let starts: Vec<i64> = edl.segments.iter().map(|s| s.timeline_start.0).collect();
+    assert_eq!(starts, [0, 600_000, 1_600_000, 2_600_000, 3_600_000]);
+    p.sections[0].edit = edl;
+    p.sections[0].music = Some(MusicRef {
+        path: rel(&root, &music),
+        duration: us(5.0),
+    });
+
+    let backend = FfmpegBackend::new().unwrap();
+    let export_audio = |p: &Project, name: &str| {
+        let out = out_dir().join(name);
+        let _ = std::fs::remove_file(&out);
+        export(
+            p,
+            Project::DEFAULT_SECTION,
+            &root,
+            &backend,
+            &backend,
+            &out,
+            &settings(),
+            &mut |_| {},
+        )
+        .unwrap();
+        decode_audio_channel0(&out)
+    };
+    let on = export_audio(&p, "clip-audio-on.mp4");
+    let mut off_project = p.clone();
+    for m in &mut off_project.media {
+        m.clip_audio = false;
+    }
+    let off = export_audio(&off_project, "clip-audio-off.mp4");
+    assert!(
+        on.len() >= 196_000 && off.len() >= 196_000,
+        "4.1 s of audio"
+    );
+
+    // Tone levels in a 10 ms window starting at `t` seconds.
+    const WIN: usize = 480;
+    let level = |x: &[f32], t: f64, hz: f64| {
+        let k = (t * f64::from(RATE)).round() as usize;
+        tone_level(&x[k..k + WIN], hz)
+    };
+    // The fixtures' tone amplitude.
+    const A: f64 = 0.05;
+
+    // 1 kHz exactly inside media 1's audible segments (+-10 ms): media 1
+    // from 0 s, fading out under the crossfade until 1.0 s, and the last
+    // cut from 3.6 s. Windows start every 10 ms; a window counts as inside
+    // or outside when it lies 10 ms clear of a boundary.
+    let inside = |t0: f64, t1: f64, t: f64| t >= t0 + 0.01 && t + 0.01 <= t1 - 0.01;
+    let outside = |t0: f64, t1: f64, t: f64| t + 0.01 <= t0 - 0.01 || t >= t1 + 0.01;
+    let mut checked = (0, 0);
+    for step in 0..400 {
+        let t = f64::from(step) * 0.01;
+        let l1 = level(&on, t, 1_000.0);
+        // Before the crossfade begins media 1 is at full level.
+        if inside(0.0, 0.6, t) || inside(3.6, 4.1, t) {
+            assert!(l1 > 0.7 * A, "1 kHz at {t:.2} s: {l1}");
+            checked.0 += 1;
+        }
+        if outside(0.0, 1.0, t) && outside(3.6, 4.1, t) {
+            assert!(l1 < 0.1 * A, "1 kHz leaks at {t:.2} s: {l1}");
+            checked.1 += 1;
+        }
+        // Clip audio off: no 1 or 2 kHz anywhere.
+        for hz in [1_000.0, 2_000.0] {
+            let l = level(&off, t, hz);
+            assert!(l < 0.1 * A, "{hz} Hz with clip audio off at {t:.2} s: {l}");
+        }
+        // 2 kHz only in media 2's segment, 0.6 s to 1.6 s.
+        let l2 = level(&on, t, 2_000.0);
+        if inside(1.0, 1.6, t) {
+            assert!(l2 > 0.7 * A, "2 kHz at {t:.2} s: {l2}");
+        }
+        if outside(0.6, 1.6, t) {
+            assert!(l2 < 0.1 * A, "2 kHz leaks at {t:.2} s: {l2}");
+        }
+    }
+    // Media 3 (clip audio off, 1.6-2.6 s) and the slow-mo segment
+    // (2.6-3.6 s) were among the "outside" windows.
+    assert!(checked.0 >= 95 && checked.1 >= 250, "{checked:?}");
+
+    // Crossfade midpoint (0.8 s): both tones at equal power, each at
+    // cos(pi / 4) of full level.
+    let mid = 0.8 - 0.005;
+    let (l1, l2) = (level(&on, mid, 1_000.0), level(&on, mid, 2_000.0));
+    assert!(
+        (l1 / l2 - 1.0).abs() < 0.15,
+        "midpoint 1 kHz {l1} vs 2 kHz {l2}"
+    );
+    for l in [l1, l2] {
+        assert!(
+            (l / A - std::f64::consts::FRAC_1_SQRT_2).abs() < 0.15,
+            "midpoint {l}"
+        );
+    }
+    // Total power over the crossfade stays at one tone's power.
+    for t in [0.65, 0.7, 0.75, 0.85, 0.9] {
+        let (l1, l2) = (level(&on, t, 1_000.0), level(&on, t, 2_000.0));
+        let power = (l1 * l1 + l2 * l2) / (A * A);
+        assert!((power - 1.0).abs() < 0.25, "power at {t} s: {power}");
+    }
+
+    // The music is there either way, at the same level (before its 1 s
+    // fade-out from 3.1 s).
+    for t in [0.3, 1.3, 2.0, 2.8] {
+        let (a, b) = (level(&on, t, 440.0), level(&off, t, 440.0));
+        assert!(
+            b > 0.7 * A && (a / b - 1.0).abs() < 0.1,
+            "440 Hz at {t}: {a} vs {b}"
+        );
+    }
+    assert!(on.iter().all(|s| s.abs() <= 1.0));
+}
+
 /// Every frame of an MP4, decoded to RGBA.
 fn decode_all(backend: &FfmpegBackend, path: &Path) -> Vec<kv_media::VideoFrame> {
     let mut r = backend

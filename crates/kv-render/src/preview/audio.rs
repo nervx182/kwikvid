@@ -20,7 +20,8 @@
 //!   `audio-device` feature elsewhere) for real playback. Without a device
 //!   the engine keeps its [`SystemClock`](super::SystemClock).
 //!
-//! TODO(#72): mix clip audio under the music the same way as export.
+//! TODO(#122): mix clip audio under the music the same way as export
+//! (`kv_audio::render_clip_audio` + `kv_audio::mix_under_music`).
 
 use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};

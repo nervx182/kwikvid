@@ -18,13 +18,19 @@
 //!    is rasterised once at the output size ([`title::rasterize`]) and
 //!    alpha-blended over the frames the plan gives it an overlay on
 //!    ([`overlay()`]).
-//! 3. After each video frame, write the music samples up to that frame's end
-//!    so audio and video stay interleaved for the muxer.
+//! 3. After each video frame, write the audio samples up to that frame's end
+//!    so audio and video stay interleaved for the muxer. The audio is the
+//!    music bed with the clip audio of every media item that has it on
+//!    mixed under it ([`kv_audio::render_clip_audio`],
+//!    [`kv_audio::mix_under_music`]).
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use kv_audio::{render_music_bed, MusicBedOptions, DEFAULT_FADE_OUT};
+use kv_audio::{
+    mix_under_music, render_clip_audio, render_music_bed, ClipAudioOptions, ClipAudioSource,
+    MusicBedOptions, PcmAudio, DEFAULT_FADE_OUT,
+};
 use kv_core::{MediaId, Micros, Project, SectionId};
 use kv_media::{
     DecodeOptions, Encoder, ExportSettings, MediaBackend, MediaError, Rational, VideoFrame,
@@ -103,6 +109,9 @@ pub enum RenderError {
         #[source]
         source: kv_audio::Error,
     },
+    /// A clip's audio could not be decoded.
+    #[error(transparent)]
+    ClipAudio(kv_audio::Error),
     /// Invalid settings, or the encoder failed.
     #[error(transparent)]
     Media(#[from] MediaError),
@@ -122,10 +131,13 @@ pub enum RenderError {
 /// rendered with [`render_music_bed`] for the length of the edit at
 /// `settings.audio_sample_rate` / `audio_channels`, with the project's
 /// music volume and a [`MUSIC_FADE_OUT`] fade; without music the track is
-/// silent (guess: players handle that better than no audio track).
+/// silent (guess: players handle that better than no audio track). The
+/// clip audio of media items with `clip_audio` on is mixed under the music
+/// at full level, through a limiter ([`kv_audio::mix_under_music`]).
 ///
 /// `progress` is called after every frame. Every check that does not need
-/// the output (missing media, empty edit, bad settings, unreadable music)
+/// the output (missing media, empty edit, bad settings, unreadable music
+/// or clip audio)
 /// fails before `out` is created. If writing fails part-way, the partial
 /// file is removed (best effort).
 #[allow(clippy::too_many_arguments)]
@@ -207,15 +219,18 @@ pub fn export(
             );
             opts.volume_percent = project.settings.music_volume_percent;
             opts.fade_out = MUSIC_FADE_OUT;
-            render_music_bed(&path, &opts)
-                .map_err(|source| RenderError::Music { path, source })?
-                .samples
+            render_music_bed(&path, &opts).map_err(|source| RenderError::Music { path, source })?
         }
         None => {
             let frames = audio_frames_at(duration, settings.audio_sample_rate);
-            vec![0.0; frames * usize::from(settings.audio_channels)]
+            PcmAudio {
+                samples: vec![0.0; frames * usize::from(settings.audio_channels)],
+                sample_rate: settings.audio_sample_rate,
+                channels: settings.audio_channels,
+            }
         }
     };
+    let audio = mix_clip_audio(project, edl, &sources, audio, duration)?.samples;
 
     let writer = encoder.create(out, settings)?;
     let mut job = Job {
@@ -240,6 +255,35 @@ pub fn export(
             Err(e)
         }
     }
+}
+
+/// `bed` with the clip audio of the edit's media that have `clip_audio` on
+/// mixed under it; `bed` unchanged when none has.
+fn mix_clip_audio(
+    project: &Project,
+    edl: &kv_core::Edl,
+    sources: &[Source],
+    bed: PcmAudio,
+    duration: Micros,
+) -> Result<PcmAudio, RenderError> {
+    let clip_sources: Vec<ClipAudioSource> = sources
+        .iter()
+        .filter(|s| project.media_item(s.media_id).is_some_and(|m| m.clip_audio))
+        .map(|s| ClipAudioSource {
+            media_id: s.media_id,
+            path: s.path.clone(),
+        })
+        .collect();
+    if clip_sources.is_empty() {
+        return Ok(bed);
+    }
+    let opts = ClipAudioOptions {
+        sample_rate: bed.sample_rate,
+        channels: bed.channels,
+        length: duration,
+    };
+    let clip = render_clip_audio(edl, &clip_sources, &opts).map_err(RenderError::ClipAudio)?;
+    mix_under_music(&bed, &clip).map_err(RenderError::ClipAudio)
 }
 
 /// `root / rel`, where `rel` is `/`-separated (an absolute `rel` wins).
@@ -825,6 +869,17 @@ mod tests {
             run(&music, &media, &enc, &mut Vec::new()),
             Err(RenderError::Music { .. })
         ));
+
+        // Clip audio on: the fake paths do not exist, so decoding fails.
+        let mut clip_audio = project(2, &[1, 2]);
+        clip_audio.media[1].clip_audio = true;
+        match run(&clip_audio, &media, &enc, &mut Vec::new()) {
+            Err(RenderError::ClipAudio(kv_audio::Error::ClipSource { media_id, path, .. })) => {
+                assert_eq!(media_id, MediaId(2));
+                assert_eq!(path, Path::new("/root/clips/clip2.mp4"));
+            }
+            other => panic!("{other:?}"),
+        }
 
         let p = project(1, &[1]);
         assert!(matches!(
