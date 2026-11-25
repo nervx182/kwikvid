@@ -1,7 +1,8 @@
 //! kwikvid desktop app: a thin Tauri 2 shell over [`kv_session::Session`].
 //!
 //! The UI (plain HTML/CSS/ES modules in `ui/`, no bundler) calls four
-//! commands: `apply`, `undo`, `redo` and `get_state`. Each forwards to the
+//! commands: `apply`, `undo`, `redo` and `get_state`, plus per-feature ones
+//! registered from their own module (the timeline's `get_beats` and `seek`). Each forwards to the
 //! session (see [`ipc`]); after every change the backend emits a `kv://state`
 //! event with the new snapshot. Errors come back as `{ "message": "..." }`.
 //!
@@ -13,6 +14,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod ipc;
+mod timeline;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -102,7 +104,14 @@ fn main() -> anyhow::Result<()> {
     let opts = Options::parse(std::env::args().skip(1));
 
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![apply, undo, redo, get_state])
+        .invoke_handler(tauri::generate_handler![
+            apply,
+            undo,
+            redo,
+            get_state,
+            timeline::get_beats,
+            timeline::seek
+        ])
         .setup(move |app| {
             let root = media_root(app.handle());
             tracing::info!(media_root = %root.display(), "new session");
