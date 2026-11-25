@@ -7,6 +7,10 @@
 //! [`PreviewBackend::preferred`] then draws the preview there, letterboxed
 //! to the frame's (the project's) aspect ratio.
 
+// The geometry and test pattern serve the macOS native layer; elsewhere
+// only the tests use them until the WebGL fallback (#76) lands.
+#![cfg_attr(not(target_os = "macos"), allow(dead_code))]
+
 use std::sync::{Mutex, PoisonError};
 
 use kv_core::{AspectRatio, Micros};
@@ -239,13 +243,11 @@ impl PreviewState {
 
     /// Switches to `backend` (to [`PreviewBackend::Off`] when the preferred
     /// one fails to start). Only the native backend can fail so far.
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub fn set_backend(&self, backend: PreviewBackend) {
         *self.backend.lock().unwrap_or_else(PoisonError::into_inner) = backend;
     }
 
     /// Whether `--preview-test-pattern` was given.
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub fn test_pattern(&self) -> bool {
         self.test_pattern
     }
