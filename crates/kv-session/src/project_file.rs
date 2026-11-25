@@ -11,7 +11,7 @@
 //! This is the only module of the crate that touches the file system.
 
 use crate::paths;
-use crate::{Session, SessionError, Snapshot};
+use crate::{Job, Session, SessionError, Snapshot};
 use kv_core::{FormatVersion, History, MediaId, Project, SectionId};
 use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
@@ -202,6 +202,38 @@ impl Session {
                 })
             })
             .collect()
+    }
+}
+
+impl Session {
+    /// The background jobs to run after opening a project: music analysis
+    /// for every section's music, and probe plus HiLights for every media
+    /// item, skipping files that do not exist (see
+    /// [`Session::missing_files`]). Every job checks `kv-cache` first, so
+    /// reopening an unchanged project is served from the cache.
+    pub fn reopen_jobs(&self) -> Vec<Job> {
+        let project = self.project();
+        let music = project
+            .sections
+            .iter()
+            .filter_map(|s| s.music.as_ref())
+            .map(|m| self.resolve(&m.path))
+            .filter(|p| p.exists())
+            .map(Job::AnalyzeMusic);
+        let media = project
+            .media
+            .iter()
+            .map(|m| self.resolve(&m.path))
+            .filter(|p| p.exists())
+            .flat_map(|p| [Job::ProbeMedia(p.clone()), Job::ReadHilights(p)]);
+        let mut jobs: Vec<Job> = Vec::new();
+        for job in music.chain(media) {
+            // Two sections may share a song.
+            if !jobs.contains(&job) {
+                jobs.push(job);
+            }
+        }
+        jobs
     }
 }
 

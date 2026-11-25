@@ -13,9 +13,9 @@
 //              { command, value } or { command, error } (set by
 //              mock.respond() / mock.reply() / mock.fail()).
 //              For get_beats and seek, only { command, error } applies.
-//              Any may carry delayMs: the answer arrives that much later.
-//   values     standing answers for invoke() commands that do not return
-//              a Snapshot: { [command]: value } (mock.open(s, { values })).
+//              Either may carry delayMs: the answer arrives that much later.
+//   values     standing answers for commands that do not return a
+//              Snapshot: { [command]: value } (set by mock.open(s, { values })).
 //   fire(name, payload)  deliver a backend event to onEvent listeners
 //              (set by mock.event()).
 //

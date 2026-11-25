@@ -198,3 +198,16 @@ fn project_paths_from_session_feed_commands() {
         Err(SessionError::PathNotAbsolute(_))
     ));
 }
+
+#[test]
+fn continue_revisions_keeps_revisions_increasing() {
+    let mut old = Session::new(root());
+    old.apply(add_clip(1)).unwrap();
+    let mut new = Session::new(root());
+    new.continue_revisions(old.revision());
+    assert_eq!(new.revision(), old.revision() + 1);
+    assert_eq!(new.snapshot().revision, 2);
+    assert!(!new.is_dirty() && !new.snapshot().can_undo);
+    // Changes keep counting from there.
+    assert_eq!(new.apply(add_clip(1)).unwrap().revision, 3);
+}

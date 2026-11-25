@@ -4,6 +4,7 @@
 import * as api from "./api.js";
 import { showToast } from "./toast.js";
 import { initToolbar, renderToolbar } from "./toolbar.js";
+import { initProject, renderProject } from "./project.js";
 import { initTimeline, renderTimeline } from "./timeline.js";
 import { initAutoEdit, renderAutoEdit } from "./autoedit.js";
 import { initViewer } from "./viewer.js";
@@ -21,6 +22,7 @@ function render(snapshot) {
   renderAutoEdit(snapshot);
   renderLibrary(snapshot);
   renderSummary(snapshot);
+  renderProject(snapshot);
 }
 
 function renderSummary(s) {
@@ -56,6 +58,7 @@ async function run(promise) {
 }
 
 initToolbar(run);
+initProject(render);
 initTimeline(run);
 initAutoEdit(run, render);
 initLibrary(run);

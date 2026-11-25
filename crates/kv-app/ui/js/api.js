@@ -79,17 +79,16 @@ export function onState(cb) {
 }
 
 /**
- * Call any other backend command by name, e.g. invoke("import", { paths }).
- * Resolves to whatever the command returns.
+ * Call any other backend command by name, e.g. invoke("open_project",
+ * { path }). Resolves to whatever the command returns.
  */
 export function invoke(cmd, args) {
   return call(cmd, args);
 }
 
 /**
- * Call cb(payload) for every backend event `name` (e.g. "kv://job", or
- * Tauri's "tauri://drag-drop" with { paths, position }). Resolves to a
- * function that stops listening.
+ * Call cb(payload) for every backend event `name` (e.g. "kv://menu").
+ * Resolves to a function that stops listening.
  */
 export function onEvent(name, cb) {
   return tauri.event.listen(name, (event) => cb(event.payload));
