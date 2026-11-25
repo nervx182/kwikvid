@@ -12,7 +12,8 @@ publish.workspace = true
 # `bundled` compiles SQLite (public domain) in, so no system library is needed.
 rusqlite = { version = "0.43", features = ["bundled"] }
 serde.workspace = true
-serde_json.workspace = true
+# Exact f64 round trip, so a cache hit equals a fresh result bit for bit.
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 thiserror.workspace = true
 
 [dev-dependencies]

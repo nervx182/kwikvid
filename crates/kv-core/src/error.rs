@@ -23,6 +23,14 @@ pub enum CoreError {
     #[error("path must be non-empty and relative to the project file: {0:?}")]
     InvalidPath(String),
 
+    #[error("chaptered media path {path:?} must equal its first chapter's path {first:?}")]
+    ChapterPathMismatch { path: String, first: String },
+
+    #[error(
+        "chaptered media duration {duration:?} must equal the sum of its chapter durations {sum:?}"
+    )]
+    ChapterDurationMismatch { duration: Micros, sum: Micros },
+
     #[error("hilight at {at:?} is outside the media duration {duration:?}")]
     HilightOutOfRange { at: Micros, duration: Micros },
 

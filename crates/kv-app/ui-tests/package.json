@@ -1,0 +1,14 @@
+{
+  "name": "kv-app-ui-tests",
+  "private": true,
+  "description": "Playwright tests for the kv-app webview UI (ADR 0011)",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "test": "playwright test",
+    "smoke": "node smoke/tauri-smoke.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.65.1"
+  }
+}

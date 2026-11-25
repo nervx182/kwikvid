@@ -165,6 +165,7 @@ impl Session {
             media_root: dir,
             revision: 0,
             file: Some(file),
+            music: Default::default(),
         };
         let missing = session.missing_files();
         tracing::info!(
