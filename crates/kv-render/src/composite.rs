@@ -41,6 +41,14 @@ pub enum CompositeError {
         height: u32,
         len: usize,
     },
+    /// An overlay is not the size of the output it is drawn over.
+    #[error("overlay is {width}x{height} but the output is {out_width}x{out_height}")]
+    OverlaySize {
+        width: u32,
+        height: u32,
+        out_width: u32,
+        out_height: u32,
+    },
 }
 
 /// The size a `src_w x src_h` source is scaled to when placed in an
@@ -124,6 +132,47 @@ pub fn composite(
                 s.spawn(move || render_rows(prepared, chunk, i * rows_per_chunk, out_w));
             }
         });
+    }
+    Ok(())
+}
+
+/// Alpha-blend a straight-alpha RGBA `layer` (a title card, say) over
+/// `out` at `opacity`, in place.
+///
+/// Per pixel, with `a = layer.alpha / 255 * opacity` clamped to `[0, 1]`:
+/// `out.rgb = out.rgb * (1 - a) + layer.rgb * a`, in gamma-encoded values
+/// like [`composite`], rounded once. `out`'s alpha is kept (the composited
+/// frame is opaque). `layer` must be `out`'s size: overlays are drawn at
+/// the output size, never scaled. `opacity <= 0` leaves `out` unchanged.
+pub fn overlay(
+    out: &mut VideoFrame,
+    layer: &VideoFrame,
+    opacity: f32,
+) -> Result<(), CompositeError> {
+    check_frame("output", out)?;
+    check_frame("overlay", layer)?;
+    if (layer.width, layer.height) != (out.width, out.height) {
+        return Err(CompositeError::OverlaySize {
+            width: layer.width,
+            height: layer.height,
+            out_width: out.width,
+            out_height: out.height,
+        });
+    }
+    let opacity = opacity.clamp(0.0, 1.0);
+    if opacity <= 0.0 {
+        return Ok(());
+    }
+    let k = opacity / 255.0;
+    for (o, l) in out.data.chunks_exact_mut(4).zip(layer.data.chunks_exact(4)) {
+        if l[3] == 0 {
+            continue;
+        }
+        let a = f32::from(l[3]) * k;
+        for c in 0..3 {
+            let v = f32::from(o[c]) * (1.0 - a) + f32::from(l[c]) * a;
+            o[c] = (v + 0.5) as u8;
+        }
     }
     Ok(())
 }
@@ -675,6 +724,53 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn overlay_alpha_blends_straight_alpha_over_the_frame() {
+        let mut o = VideoFrame::solid(Micros(3), 4, 1, [100, 50, 0, 255]);
+        let layer = VideoFrame::new_rgba(
+            Micros(0),
+            4,
+            1,
+            vec![
+                255, 255, 255, 255, // opaque white
+                255, 255, 255, 0, // transparent: colour ignored
+                0, 0, 0, 128, // half black
+                200, 100, 50, 51, // 20 %
+            ],
+        )
+        .unwrap();
+        let mut full = o.clone();
+        overlay(&mut full, &layer, 1.0).unwrap();
+        assert_eq!(px(&full, 0, 0), [255, 255, 255, 255]);
+        assert_eq!(px(&full, 1, 0), [100, 50, 0, 255]);
+        assert_eq!(px(&full, 2, 0), [50, 25, 0, 255]);
+        assert_eq!(px(&full, 3, 0), [120, 60, 10, 255]);
+        assert_eq!(full.pts, Micros(3));
+        // Opacity scales the layer's alpha.
+        let mut half = o.clone();
+        overlay(&mut half, &layer, 0.5).unwrap();
+        assert_eq!(px(&half, 0, 0), [178, 153, 128, 255]);
+        // Zero opacity: untouched.
+        let before = o.clone();
+        overlay(&mut o, &layer, 0.0).unwrap();
+        assert_eq!(o, before);
+    }
+
+    #[test]
+    fn overlay_must_match_the_output_size() {
+        let mut o = VideoFrame::solid(Micros(0), 4, 2, BLACK);
+        let layer = VideoFrame::solid(Micros(0), 2, 2, RED);
+        assert_eq!(
+            overlay(&mut o, &layer, 1.0),
+            Err(CompositeError::OverlaySize {
+                width: 2,
+                height: 2,
+                out_width: 4,
+                out_height: 2
+            })
+        );
     }
 
     #[test]

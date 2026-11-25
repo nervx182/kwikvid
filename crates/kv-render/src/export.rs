@@ -14,7 +14,10 @@
 //!    lazily, one per media item, decoded upright at [`source_size_for`] the
 //!    output, and kept in a small LRU ([`MAX_OPEN_READERS`]). Each reader
 //!    remembers its last [`FRAMES_KEPT`] frames by source time, so the frame
-//!    shared by consecutive slow-mo blends is decoded once.
+//!    shared by consecutive slow-mo blends is decoded once. A section title
+//!    is rasterised once at the output size ([`title::rasterize`]) and
+//!    alpha-blended over the frames the plan gives it an overlay on
+//!    ([`overlay()`]).
 //! 3. After each video frame, write the audio samples up to that frame's end
 //!    so audio and video stay interleaved for the muxer. The audio is the
 //!    music bed with the clip audio of every media item that has it on
@@ -34,8 +37,8 @@ use kv_media::{
     VideoReader, VideoWriter,
 };
 
-use crate::{composite, frame_pts, plan, segment_end, source_size_for, CompositeError, Fit};
-use crate::{OutputFrame, PlanError};
+use crate::{composite, frame_pts, overlay, plan, segment_end, source_size_for};
+use crate::{title, CompositeError, Fit, OutputFrame, OverlayId, PlanError};
 
 /// Most video readers kept open at once; the least recently used one is
 /// closed when another is needed (guess: 4 covers a crossfade plus the next
@@ -197,7 +200,11 @@ pub fn export(
     }
 
     let source_fps = |id: MediaId| sources.iter().find(|s| s.media_id == id).map(|s| s.fps);
-    let frame_plan = plan(edl, settings.fps, &source_fps)?;
+    let frame_plan = plan(edl, settings.fps, &source_fps)?.with_title(sec.title.as_ref());
+    let title = sec
+        .title
+        .as_ref()
+        .map(|t| title::rasterize(t, settings.width, settings.height));
 
     // Audio, rendered up front so a bad music file fails before the output
     // exists.
@@ -231,6 +238,7 @@ pub fn export(
         media,
         readers: Vec::new(),
         settings,
+        title,
     };
     match job.write_all(writer, &frame_plan, &audio, progress) {
         Ok(encoder_name) => Ok(ExportReport {
@@ -311,6 +319,8 @@ struct Job<'a> {
     /// Open readers, most recently used last.
     readers: Vec<OpenReader>,
     settings: &'a ExportSettings,
+    /// The section's title card at the output size, if it has one.
+    title: Option<VideoFrame>,
 }
 
 struct OpenReader {
@@ -367,6 +377,14 @@ impl Job<'_> {
         let layers: Vec<(&VideoFrame, f32)> = decoded.iter().map(|(f, w)| (f, *w)).collect();
         out.pts = frame.pts;
         composite(&layers, out, Fit::Fill)?;
+        for o in &frame.overlays {
+            let image = match o.id {
+                OverlayId::Title => self.title.as_ref(),
+            };
+            if let Some(image) = image {
+                overlay(out, image, o.opacity)?;
+            }
+        }
         Ok(())
     }
 
@@ -548,9 +566,11 @@ mod tests {
     struct FakeEncoder {
         calls: Arc<Mutex<Vec<Call>>>,
         created: Arc<AtomicUsize>,
+        /// Every video frame written, in order.
+        frames: Arc<Mutex<Vec<VideoFrame>>>,
     }
 
-    struct FakeWriter(Arc<Mutex<Vec<Call>>>);
+    struct FakeWriter(Arc<Mutex<Vec<Call>>>, Arc<Mutex<Vec<VideoFrame>>>);
 
     impl Encoder for FakeEncoder {
         fn create(
@@ -560,7 +580,10 @@ mod tests {
         ) -> kv_media::Result<Box<dyn VideoWriter>> {
             settings.validate()?;
             self.created.fetch_add(1, Ordering::SeqCst);
-            Ok(Box::new(FakeWriter(self.calls.clone())))
+            Ok(Box::new(FakeWriter(
+                self.calls.clone(),
+                self.frames.clone(),
+            )))
         }
 
         fn supports(&self, _: kv_media::VideoCodec) -> bool {
@@ -577,6 +600,7 @@ mod tests {
                 pts: f.pts,
                 level: f.data[0],
             });
+            self.1.lock().unwrap().push(f.clone());
             Ok(())
         }
         fn write_audio(&mut self, s: &[f32]) -> kv_media::Result<()> {
@@ -746,6 +770,62 @@ mod tests {
         assert_eq!(asked, wanted);
         assert!(asked.windows(2).all(|w| w[0] < w[1]));
         assert_eq!(asked[..4], [0, 33_333, 66_667, 100_000].map(Micros));
+    }
+
+    #[test]
+    fn title_is_drawn_over_the_first_frames_only() {
+        // Two 1 s cuts of dark grey footage at 10 fps, 320x180, a 1 s title.
+        let mut p = project(2, &[1, 2]);
+        p.sections[0].title = Some(kv_core::TitleCard {
+            text: "Summer".into(),
+            duration: Micros(1_000_000),
+        });
+        let s = ExportSettings {
+            width: 320,
+            height: 180,
+            ..settings()
+        };
+        let (media, enc) = (FakeMedia::default(), FakeEncoder::default());
+        let report = export(
+            &p,
+            Project::DEFAULT_SECTION,
+            Path::new("/root"),
+            &media,
+            &enc,
+            Path::new("/nonexistent/out.mp4"),
+            &s,
+            &mut |_| {},
+        )
+        .unwrap();
+        assert_eq!(report.frames, 20);
+        let frames = enc.frames.lock().unwrap();
+        // Bright pixels in the central band (text), per frame.
+        let bright = |f: &VideoFrame| {
+            let mut n = 0;
+            for y in 60..120usize {
+                for x in 32..288usize {
+                    let i = (y * 320 + x) * 4;
+                    if f.data[i..i + 3].iter().all(|&c| c > 200) {
+                        n += 1;
+                    }
+                }
+            }
+            n
+        };
+        let counts: Vec<usize> = frames.iter().map(bright).collect();
+        // Frame 0: opacity 0. Frames 3..=7: fully shown. From 1 s: none.
+        assert_eq!(counts[0], 0, "{counts:?}");
+        assert!(counts[3..=7].iter().all(|&n| n > 40), "{counts:?}");
+        assert!(counts[10..].iter().all(|&n| n == 0), "{counts:?}");
+        // Corners keep the footage (grey 10, then 20) throughout.
+        for (k, f) in frames.iter().enumerate() {
+            let level = if k < 10 { 10 } else { 20 };
+            assert_eq!(f.data[..4], [level, level, level, 255], "frame {k}");
+        }
+        // After the title the frames are untouched footage.
+        assert!(frames[10..]
+            .iter()
+            .all(|f| f.data.chunks_exact(4).all(|px| px == [20, 20, 20, 255])));
     }
 
     #[test]

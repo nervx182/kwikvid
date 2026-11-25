@@ -15,6 +15,10 @@
 //! picks any adapter, software ones included, so the compositor runs in
 //! Linux CI on lavapipe. Presenting to a window is the app's job: it renders
 //! into its swapchain texture with [`GpuCompositor::render_to_view`].
+//!
+//! Overlays (the title card) are straight-alpha images at the output size,
+//! drawn after the layers in the same pass with "over" blending, like
+//! [`crate::overlay()`] ([`GpuCompositor::render_with_overlays`]).
 
 use std::collections::HashMap;
 use std::sync::mpsc;
@@ -150,8 +154,9 @@ pub struct GpuCompositor {
     layout: wgpu::BindGroupLayout,
     shader: wgpu::ShaderModule,
     pipeline_layout: wgpu::PipelineLayout,
-    /// One pipeline per target format (the offscreen output, a swapchain).
-    pipelines: HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
+    /// One pipeline per target format (the offscreen output, a swapchain)
+    /// and kind (`false`: additive layer, `true`: alpha-blended overlay).
+    pipelines: HashMap<(wgpu::TextureFormat, bool), wgpu::RenderPipeline>,
     uniforms: wgpu::Buffer,
     uniform_stride: u64,
     uniform_slots: u64,
@@ -233,7 +238,7 @@ impl GpuCompositor {
             free: HashMap::new(),
             next_id: 0,
         };
-        compositor.pipeline(OUTPUT_FORMAT);
+        compositor.pipeline(OUTPUT_FORMAT, false);
         Ok(compositor)
     }
 
@@ -322,8 +327,20 @@ impl GpuCompositor {
     /// scaled with `fit`, weighted and summed, like [`crate::composite()`].
     /// No layers draws opaque black.
     pub fn render(&mut self, layers: &[(TextureId, f32)], fit: Fit) -> Result<(), GpuError> {
+        self.render_with_overlays(layers, &[], fit)
+    }
+
+    /// Like [`render`](Self::render), then alpha-blend `overlays`
+    /// (texture, opacity) on top in order, like [`crate::overlay()`]. An
+    /// overlay texture must be exactly `width() x height()`.
+    pub fn render_with_overlays(
+        &mut self,
+        layers: &[(TextureId, f32)],
+        overlays: &[(TextureId, f32)],
+        fit: Fit,
+    ) -> Result<(), GpuError> {
         let view = self.output_view.clone();
-        self.render_to_view(&view, OUTPUT_FORMAT, layers, fit)
+        self.render_to_view_with_overlays(&view, OUTPUT_FORMAT, layers, overlays, fit)
     }
 
     /// Like [`render`](Self::render), into a caller's texture view (a
@@ -337,12 +354,47 @@ impl GpuCompositor {
         layers: &[(TextureId, f32)],
         fit: Fit,
     ) -> Result<(), GpuError> {
-        let mut params = Vec::with_capacity(layers.len());
+        self.render_to_view_with_overlays(view, format, layers, &[], fit)
+    }
+
+    /// [`render_with_overlays`](Self::render_with_overlays) into a caller's
+    /// texture view, as [`render_to_view`](Self::render_to_view).
+    pub fn render_to_view_with_overlays(
+        &mut self,
+        view: &wgpu::TextureView,
+        format: wgpu::TextureFormat,
+        layers: &[(TextureId, f32)],
+        overlays: &[(TextureId, f32)],
+        fit: Fit,
+    ) -> Result<(), GpuError> {
+        let mut params = Vec::with_capacity(layers.len() + overlays.len());
         for &(id, weight) in layers {
             let source = self.live.get(&id).ok_or(GpuError::UnknownTexture(id))?;
             let (w, h) = (source.texture.width(), source.texture.height());
             params.push(uniform_bytes(w, h, self.out_w, self.out_h, fit, weight));
         }
+        for &(id, opacity) in overlays {
+            let source = self.live.get(&id).ok_or(GpuError::UnknownTexture(id))?;
+            let (w, h) = (source.texture.width(), source.texture.height());
+            if (w, h) != (self.out_w, self.out_h) {
+                return Err(GpuError::InvalidSize {
+                    which: "overlay",
+                    width: w,
+                    height: h,
+                    detail: format!("must be the output size {}x{}", self.out_w, self.out_h),
+                });
+            }
+            let opacity = opacity.clamp(0.0, 1.0);
+            params.push(uniform_bytes(
+                w,
+                h,
+                self.out_w,
+                self.out_h,
+                Fit::Fill,
+                opacity,
+            ));
+        }
+        let draws: Vec<TextureId> = layers.iter().chain(overlays).map(|&(id, _)| id).collect();
         let slots = params.len() as u64;
         if slots > self.uniform_slots {
             self.uniform_slots = slots.next_power_of_two();
@@ -352,10 +404,10 @@ impl GpuCompositor {
             self.queue
                 .write_buffer(&self.uniforms, i as u64 * self.uniform_stride, bytes);
         }
-        let bind_groups: Vec<wgpu::BindGroup> = layers
+        let bind_groups: Vec<wgpu::BindGroup> = draws
             .iter()
             .enumerate()
-            .map(|(i, (id, _))| {
+            .map(|(i, id)| {
                 self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("kv-render layer"),
                     layout: &self.layout,
@@ -383,7 +435,12 @@ impl GpuCompositor {
         } else {
             wgpu::Color::TRANSPARENT
         };
-        let pipeline = self.pipeline(format).clone();
+        let pipeline = self.pipeline(format, false).clone();
+        let overlay_pipeline = if overlays.is_empty() {
+            None
+        } else {
+            Some(self.pipeline(format, true).clone())
+        };
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -405,9 +462,17 @@ impl GpuCompositor {
                 occlusion_query_set: None,
             });
             pass.set_pipeline(&pipeline);
-            for group in &bind_groups {
+            let (layer_groups, overlay_groups) = bind_groups.split_at(layers.len());
+            for group in layer_groups {
                 pass.set_bind_group(0, group, &[]);
                 pass.draw(0..3, 0..1);
+            }
+            if let Some(p) = &overlay_pipeline {
+                pass.set_pipeline(p);
+                for group in overlay_groups {
+                    pass.set_bind_group(0, group, &[]);
+                    pass.draw(0..3, 0..1);
+                }
             }
         }
         self.queue.submit([encoder.finish()]);
@@ -427,13 +492,33 @@ impl GpuCompositor {
         })
     }
 
-    fn pipeline(&mut self, format: wgpu::TextureFormat) -> &wgpu::RenderPipeline {
+    fn pipeline(&mut self, format: wgpu::TextureFormat, overlay: bool) -> &wgpu::RenderPipeline {
         let (device, shader, layout) = (&self.device, &self.shader, &self.pipeline_layout);
-        self.pipelines.entry(format).or_insert_with(|| {
+        self.pipelines.entry((format, overlay)).or_insert_with(|| {
             let add = wgpu::BlendComponent {
                 src_factor: wgpu::BlendFactor::One,
                 dst_factor: wgpu::BlendFactor::One,
                 operation: wgpu::BlendOperation::Add,
+            };
+            let blend = if overlay {
+                // Straight-alpha "over"; the target's alpha is kept.
+                wgpu::BlendState {
+                    color: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::SrcAlpha,
+                        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                        operation: wgpu::BlendOperation::Add,
+                    },
+                    alpha: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::Zero,
+                        dst_factor: wgpu::BlendFactor::One,
+                        operation: wgpu::BlendOperation::Add,
+                    },
+                }
+            } else {
+                wgpu::BlendState {
+                    color: add,
+                    alpha: add,
+                }
             };
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("kv-render composite"),
@@ -446,14 +531,11 @@ impl GpuCompositor {
                 },
                 fragment: Some(wgpu::FragmentState {
                     module: shader,
-                    entry_point: Some("fs"),
+                    entry_point: Some(if overlay { "fs_overlay" } else { "fs" }),
                     compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState {
                         format,
-                        blend: Some(wgpu::BlendState {
-                            color: add,
-                            alpha: add,
-                        }),
+                        blend: Some(blend),
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
                 }),

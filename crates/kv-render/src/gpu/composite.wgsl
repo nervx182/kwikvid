@@ -28,13 +28,8 @@ fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
     return vec4<f32>(x, y, 0.0, 1.0);
 }
 
-@fragment
-fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
-    let p = vec2<i32>(floor(pos.xy));
-    let r = layer.rect;
-    if (p.x < r.x || p.x >= r.y || p.y < r.z || p.y >= r.w) {
-        return vec4<f32>(0.0, 0.0, 0.0, layer.weight);
-    }
+// The layer's bilinear sample at output pixel `p` (inside `layer.rect`).
+fn sample(p: vec2<i32>) -> vec4<f32> {
     let dims = vec2<i32>(textureDimensions(src));
     let max_s = vec2<f32>(dims - vec2<i32>(1, 1));
     let s = clamp((vec2<f32>(p - layer.offset) + 0.5) * layer.ratio - 0.5, vec2<f32>(0.0), max_s);
@@ -47,5 +42,33 @@ fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let c11 = textureLoad(src, vec2<i32>(i1.x, i1.y), 0);
     let top = c00 * (1.0 - t.x) + c10 * t.x;
     let bottom = c01 * (1.0 - t.x) + c11 * t.x;
-    return (top * (1.0 - t.y) + bottom * t.y) * layer.weight;
+    return top * (1.0 - t.y) + bottom * t.y;
+}
+
+fn outside(p: vec2<i32>) -> bool {
+    let r = layer.rect;
+    return p.x < r.x || p.x >= r.y || p.y < r.z || p.y >= r.w;
+}
+
+// A weighted source layer, added to the target (blend One + One).
+@fragment
+fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
+    let p = vec2<i32>(floor(pos.xy));
+    if (outside(p)) {
+        return vec4<f32>(0.0, 0.0, 0.0, layer.weight);
+    }
+    return sample(p) * layer.weight;
+}
+
+// A straight-alpha overlay at opacity `weight`, drawn after the layers with
+// "over" blending (colour SrcAlpha + OneMinusSrcAlpha, target alpha kept),
+// like kv_render::overlay on the CPU.
+@fragment
+fn fs_overlay(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
+    let p = vec2<i32>(floor(pos.xy));
+    if (outside(p)) {
+        return vec4<f32>(0.0);
+    }
+    let c = sample(p);
+    return vec4<f32>(c.rgb, c.a * layer.weight);
 }
