@@ -10,6 +10,10 @@ publish.workspace = true
 default = ["gpu"]
 # wgpu compositor for the live preview (`kv_render::gpu`, ADR 0007).
 gpu = ["dep:wgpu", "dep:pollster"]
+# Preview audio through cpal (`kv_render::preview::audio::CpalOutput`). Always
+# on for macOS (CoreAudio, no extra system libraries); opt-in elsewhere
+# because Linux needs the ALSA headers (`libasound2-dev`).
+audio-device = ["dep:cpal"]
 
 [dependencies]
 kv-audio = { path = "../kv-audio" }
@@ -23,6 +27,11 @@ tracing = { version = "0.1", default-features = false, features = ["std"] }
 wgpu = { version = "=25.0.2", default-features = false, features = ["wgsl", "metal", "vulkan", "dx12"], optional = true }
 # Blocks on wgpu's async adapter/device requests. MIT OR Apache-2.0.
 pollster = { version = "0.4", optional = true }
+# Audio output for the preview. Apache-2.0.
+cpal = { version = "0.16", optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+cpal = "0.16"
 
 [dev-dependencies]
 proptest.workspace = true

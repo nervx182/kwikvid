@@ -25,9 +25,15 @@
 //!   960x540, the proxy size that held 57-60 fps in the ADR 0007 spike.
 //!   Sources are decoded straight at [`source_size_for`] that size.
 //!
+//! - **Audio.** With [`PreviewConfig::audio`] the engine renders the
+//!   section's music bed for the transport, keeps it in step on play,
+//!   pause, seek and edit, and takes its time from the transport's
+//!   [`AudioClock`] so picture follows sound (see [`audio`]).
+//!
 //! Driving: the native layer calls [`PreviewEngine::tick`] once per vsync;
 //! [`Pacer`] does it on a thread for hosts without one.
 
+pub mod audio;
 mod clock;
 mod output;
 
@@ -38,13 +44,15 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use kv_core::{Edl, MediaId, Micros, Project, SectionId};
+use kv_audio::{render_music_bed, MusicBedOptions, PcmAudio};
+use kv_core::{Edl, MediaId, Micros, MusicRef, Project, SectionId};
 use kv_media::{DecodeOptions, MediaBackend, Rational, VideoFrame, VideoReader};
 
+pub use audio::{AudioClock, AudioOutput, AudioTransport, NullOutput};
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use output::{CpuCompositor, FrameSink, PreviewCompositor, RenderedFrame};
 
-use crate::{frame_pts, plan, source_size_for, CompositeError, Fit, PlanError};
+use crate::{frame_pts, plan, source_size_for, CompositeError, Fit, PlanError, MUSIC_FADE_OUT};
 
 /// The proxy size the preview falls back to when the output is larger than
 /// the viewer (ADR 0007: 960x540 held 57-60 fps on the CI Mac).
@@ -98,8 +106,12 @@ pub struct PreviewConfig {
     pub decode_threads: usize,
     /// Longest a [`PreviewEngine::tick`] blocks waiting for the due frame.
     pub max_wait: Duration,
-    /// Drives playback. The audio output will provide its own.
+    /// Drives playback. Ignored when [`audio`](Self::audio) is set: the
+    /// transport's [`AudioClock`] drives it instead.
     pub clock: Arc<dyn Clock>,
+    /// Plays the section's music bed in sync (see [`audio`]); `None` for a
+    /// silent preview (no device, tests).
+    pub audio: Option<Arc<AudioTransport>>,
 }
 
 impl Default for PreviewConfig {
@@ -113,6 +125,7 @@ impl Default for PreviewConfig {
             decode_threads: threads.clamp(1, 4),
             max_wait: Duration::from_millis(100),
             clock: Arc::new(SystemClock::new()),
+            audio: None,
         }
     }
 }
@@ -126,6 +139,7 @@ impl std::fmt::Debug for PreviewConfig {
             .field("prefetch", &self.prefetch)
             .field("decode_threads", &self.decode_threads)
             .field("max_wait", &self.max_wait)
+            .field("audio", &self.audio.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -262,6 +276,8 @@ pub struct PreviewEngine {
     sink: Mutex<Box<dyn FrameSink>>,
     on_position: Mutex<Option<PositionCallback>>,
     tick_lock: Mutex<()>,
+    /// Last rendered bed: (music path, length) and the PCM.
+    bed: Mutex<Option<(PathBuf, Micros, Arc<PcmAudio>)>>,
     workers: Vec<JoinHandle<()>>,
 }
 
@@ -273,8 +289,11 @@ impl PreviewEngine {
         media: Arc<dyn MediaBackend>,
         compositor: Box<dyn PreviewCompositor>,
         sink: Box<dyn FrameSink>,
-        config: PreviewConfig,
+        mut config: PreviewConfig,
     ) -> Result<Self, PreviewError> {
+        if let Some(audio) = &config.audio {
+            config.clock = audio.clock();
+        }
         plan(&Edl::default(), config.fps, &no_source_fps)?;
         let size = compositor.size();
         if size.0 == 0 || size.1 == 0 {
@@ -321,6 +340,7 @@ impl PreviewEngine {
             sink: Mutex::new(sink),
             on_position: Mutex::new(None),
             tick_lock: Mutex::new(()),
+            bed: Mutex::new(None),
             workers,
         })
     }
@@ -356,6 +376,9 @@ impl PreviewEngine {
                 None => tracing::warn!(media_id = seg.media_id.0, "preview: media not in project"),
             }
         }
+        if let Some(audio) = &self.config.audio {
+            self.update_bed(audio, project, sec.music.as_ref(), end);
+        }
         let now = self.config.clock.now();
         let pos = {
             let mut st = self.shared.lock();
@@ -376,6 +399,7 @@ impl PreviewEngine {
             if st.edit.as_ref().is_some_and(|e| e.end <= pos) {
                 st.playing = false;
             }
+            self.sync_audio(&st, now);
             self.schedule(&mut st, pos);
             pos
         };
@@ -406,6 +430,7 @@ impl PreviewEngine {
             } else {
                 k as i64 - 1
             };
+            self.sync_audio(&st, now);
         }
         self.shared.notify();
     }
@@ -417,6 +442,7 @@ impl PreviewEngine {
             let mut st = self.shared.lock();
             st.pos = st.position(now);
             st.playing = false;
+            self.sync_audio(&st, now);
         }
         self.shared.notify();
     }
@@ -449,6 +475,7 @@ impl PreviewEngine {
                     latency_us = tracing::field::Empty
                 ),
             });
+            self.sync_audio(&st, now);
             self.schedule(&mut st, pos);
             pos
         };
@@ -494,6 +521,7 @@ impl PreviewEngine {
                 st.playing = false;
                 st.pos = end;
                 pos = end;
+                self.sync_audio(&st, now);
             }
             let Some(k) = index_at(self.config.fps, pos, len) else {
                 return Ok(Tick::Idle);
@@ -559,6 +587,53 @@ impl PreviewEngine {
         rendered?;
         self.report_position(pos);
         Ok(Tick::Presented(index))
+    }
+
+    /// Point the audio transport at the playhead: bed frame `st.pos` is
+    /// heard at clock `now` (the anchor just set), playing or not.
+    fn sync_audio(&self, st: &State, now: Micros) {
+        if let Some(audio) = &self.config.audio {
+            audio.sync(st.playing, st.pos, now);
+        }
+    }
+
+    /// Render (or reuse) the music bed for a section of length `end` and
+    /// hand it to `audio` with the project's music volume. The bed is
+    /// rendered at 100%; the volume is applied live by the transport. A
+    /// music file that cannot be read plays as silence.
+    fn update_bed(
+        &self,
+        audio: &AudioTransport,
+        project: &Project,
+        music: Option<&MusicRef>,
+        end: Micros,
+    ) {
+        audio.set_volume(f32::from(project.settings.music_volume_percent) / 100.0);
+        let bed = music.and_then(|m| {
+            let path = resolve(&self.config.media_root, &m.path);
+            let mut cache = lock(&self.bed);
+            if let Some((p, len, bed)) = cache.as_ref() {
+                if *p == path && *len == end {
+                    return Some(Arc::clone(bed));
+                }
+            }
+            let mut opts = MusicBedOptions::new(audio.sample_rate(), audio.channels(), end);
+            opts.fade_out = MUSIC_FADE_OUT;
+            match render_music_bed(&path, &opts) {
+                Ok(pcm) => {
+                    let bed = Arc::new(pcm);
+                    *cache = Some((path, end, Arc::clone(&bed)));
+                    Some(bed)
+                }
+                Err(e) => {
+                    tracing::warn!(path = %path.display(), "preview: cannot render music: {e}");
+                    None
+                }
+            }
+        });
+        if let Err(e) = audio.set_bed(bed) {
+            tracing::warn!("preview: {e}");
+        }
     }
 
     fn report_position(&self, pos: Micros) {
