@@ -169,9 +169,8 @@ impl Library {
 /// FFmpeg plus the cache file `cache.sqlite` in `cache_dir` (in memory when
 /// it can't be opened).
 fn real_context(cache_dir: Option<PathBuf>) -> Result<JobContext, String> {
-    let media: Arc<dyn MediaBackend> = Arc::new(
-        FfmpegBackend::new().map_err(|e| format!("Video import is unavailable: {e}"))?,
-    );
+    let media: Arc<dyn MediaBackend> =
+        Arc::new(FfmpegBackend::new().map_err(|e| format!("Video import is unavailable: {e}"))?);
     let on_disk = cache_dir.and_then(|dir| {
         std::fs::create_dir_all(&dir)
             .map_err(|e| e.to_string())
