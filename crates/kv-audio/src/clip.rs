@@ -78,7 +78,7 @@ fn validate_format(sample_rate: u32, channels: u16) -> Result<(), Error> {
 ///
 /// Times are track timestamps: an MP4 edit list (e.g. the AAC encoder's
 /// priming delay of about 21 ms) is not applied, because symphonia does not
-/// read edit lists yet.
+/// read edit lists yet (#107).
 pub fn decode_range(
     path: impl AsRef<Path>,
     start: Micros,
