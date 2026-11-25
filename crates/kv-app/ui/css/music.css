@@ -1,0 +1,33 @@
+/* Music picker (js/music.js). */
+.mu { margin-top: 16px; padding-top: 8px; border-top: 1px solid var(--line); }
+.mu-bar { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.mu-status { display: flex; align-items: center; gap: 6px; margin: 0 0 6px; color: var(--muted); }
+.mu-status[hidden], .mu-error[hidden], .mu-current[hidden], .mu-bundled[hidden], .mu-subhead[hidden] { display: none; }
+.mu-spinner {
+  width: 10px; height: 10px; border-radius: 50%;
+  border: 2px solid var(--muted); border-top-color: transparent;
+  animation: mu-spin 0.8s linear infinite;
+}
+@keyframes mu-spin { to { transform: rotate(360deg); } }
+.mu-error { margin: 0 0 6px; color: #f08a93; }
+.mu-current { border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px 6px; }
+.mu-head { display: flex; align-items: center; gap: 6px; min-height: 20px; }
+.mu-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mu-duration, .mu-tempo { color: var(--muted); font-variant-numeric: tabular-nums; }
+.mu-strip {
+  position: relative; height: 18px; margin-top: 4px;
+  border-radius: 3px; background: #15161a; overflow: hidden;
+}
+.mu-beat {
+  position: absolute; bottom: 0; height: 45%; width: 1px;
+  background: var(--muted);
+}
+.mu-downbeat { height: 100%; width: 2px; margin-left: -0.5px; background: var(--accent); }
+.mu-subhead {
+  margin: 12px 0 6px; font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted);
+}
+.mu-bundled { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.mu-track { display: flex; width: 100%; gap: 6px; text-align: left; }
+.mu-track-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mu-track-artist { color: var(--muted); }

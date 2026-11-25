@@ -139,10 +139,12 @@ impl Library {
             .name("kv-job-events".into())
             .spawn(move || {
                 for msg in events {
+                    let mut update = JobUpdate::from_message(&msg);
                     if let Ok(mut session) = app.state::<AppState>().session() {
                         session.handle_job_message(&msg);
+                        crate::music::on_job_message(&app, &mut session, &msg, &mut update);
                     }
-                    emit(&app, JOB_EVENT, &JobUpdate::from_message(&msg));
+                    emit(&app, JOB_EVENT, &update);
                 }
             })
             .expect("failed to spawn the job event thread");
@@ -153,6 +155,12 @@ impl Library {
         self.jobs.as_ref().map_err(|why| IpcError {
             message: why.clone(),
         })
+    }
+
+    /// Queue one job; its queued update (not emitted).
+    pub(crate) fn submit(&self, job: Job) -> Result<JobUpdate, IpcError> {
+        let (_, runner) = self.jobs()?;
+        Ok(JobUpdate::queued(runner.submit(job.clone()), &job))
     }
 
     /// Queue the filmstrip job of every added item; the updates to emit.
@@ -209,6 +217,11 @@ fn emit<R: Runtime, T: Serialize + Clone>(app: &AppHandle<R>, event: &str, paylo
     if let Err(e) = app.emit(event, payload) {
         tracing::warn!(error = %e, "could not emit {event}");
     }
+}
+
+/// Emit one `kv://job` update.
+pub(crate) fn emit_job<R: Runtime>(app: &AppHandle<R>, update: &JobUpdate) {
+    emit(app, JOB_EVENT, update);
 }
 
 /// Import on a blocking thread (probing reads files), then emit the new

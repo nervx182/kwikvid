@@ -27,6 +27,9 @@
   "bundle": {
     "active": false,
     "targets": ["app"],
-    "icon": ["icons/icon.png"]
+    "icon": ["icons/icon.png"],
+    "resources": {
+      "../../assets/music/": "music/"
+    }
   }
 }
