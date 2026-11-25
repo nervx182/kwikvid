@@ -1,5 +1,6 @@
-//! Background jobs: a small thread pool that probes media, reads HiLights and
-//! analyses music, with results cached in [`kv_cache`].
+//! Background jobs: a small thread pool that probes media, reads HiLights,
+//! analyses music and makes filmstrip thumbnails, with results cached in
+//! [`kv_cache`].
 //!
 //! [`JobRunner::submit`] queues a [`Job`] and returns its [`JobId`]. Workers
 //! report on the event channel returned by [`JobRunner::new`], as
@@ -27,12 +28,13 @@ use std::thread;
 
 use kv_audio::MusicAnalysis;
 use kv_cache::{Cache, SourceKey};
-use kv_core::Micros;
+use kv_core::{MediaId, Micros};
 use kv_media::{MediaBackend, MediaInfo};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use crate::analysis::MusicAnalyzer;
+use crate::filmstrips::{FilmstripGenerator, FILMSTRIP_COUNT, FILMSTRIP_HEIGHT};
 
 /// Cache `kind` of [`Job::AnalyzeMusic`] results.
 pub const MUSIC_ANALYSIS_KIND: &str = "music-analysis";
@@ -47,6 +49,20 @@ pub const PROBE_PARAMS: &str = "v=1";
 pub const HILIGHTS_KIND: &str = "hilights";
 /// Cache `params` of [`Job::ReadHilights`] results.
 pub const HILIGHTS_PARAMS: &str = "v=1";
+/// Cache `kind` of [`Job::Filmstrip`] thumbnails (one JPEG per entry).
+pub const FILMSTRIP_KIND: &str = "filmstrip";
+/// Version part of the cache `params` of [`Job::Filmstrip`] thumbnails; the
+/// full params also name the count, height, number of chapters and index
+/// (see [`filmstrip_params`]).
+pub const FILMSTRIP_PARAMS: &str = "v=1";
+
+/// Cache `params` of thumbnail `index` of a [`Job::Filmstrip`] over
+/// `chapters` files.
+pub fn filmstrip_params(chapters: usize, index: u32) -> String {
+    format!(
+        "{FILMSTRIP_PARAMS};n={FILMSTRIP_COUNT};h={FILMSTRIP_HEIGHT};chapters={chapters};i={index}"
+    )
+}
 
 /// Identifies a submitted job. Unique within one [`JobRunner`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -62,13 +78,26 @@ pub enum Job {
     /// Read GoPro HiLight tags: [`JobResult::Hilights`]. A file that is not a
     /// GoPro MP4 gives an empty list, not an error.
     ReadHilights(PathBuf),
+    /// Make the library thumbnails of a media item:
+    /// [`JobResult::Filmstrip`]. `files` are the item's file, or a chaptered
+    /// recording's chapters in order, with their durations (build it with
+    /// [`Session::filmstrip_job`](crate::Session::filmstrip_job)).
+    Filmstrip {
+        media_id: MediaId,
+        files: Vec<(PathBuf, Micros)>,
+    },
 }
 
 impl Job {
-    /// The file the job works on.
+    /// The file the job works on (a chaptered item's first chapter; empty
+    /// for a filmstrip job without files).
     pub fn path(&self) -> &Path {
         match self {
             Job::AnalyzeMusic(p) | Job::ProbeMedia(p) | Job::ReadHilights(p) => p,
+            Job::Filmstrip { files, .. } => files
+                .first()
+                .map(|(p, _)| p.as_path())
+                .unwrap_or(Path::new("")),
         }
     }
 }
@@ -80,6 +109,8 @@ pub enum JobResult {
     MediaInfo(MediaInfo),
     /// HiLight times, ascending.
     Hilights(Vec<Micros>),
+    /// [`FILMSTRIP_COUNT`] JPEG thumbnails, in time order.
+    Filmstrip(Vec<Vec<u8>>),
 }
 
 /// Progress of one job.
@@ -126,6 +157,25 @@ pub struct JobContext {
     pub media: Arc<dyn MediaBackend>,
     pub analyzer: Arc<dyn MusicAnalyzer>,
     pub cache: Arc<Cache>,
+    /// Makes filmstrip thumbnails; usually
+    /// [`MediaFilmstrips`](crate::MediaFilmstrips) over `media`.
+    pub filmstrips: Arc<dyn FilmstripGenerator>,
+}
+
+impl JobContext {
+    /// A context whose filmstrips are decoded with `media`.
+    pub fn new(
+        media: Arc<dyn MediaBackend>,
+        analyzer: Arc<dyn MusicAnalyzer>,
+        cache: Arc<Cache>,
+    ) -> JobContext {
+        JobContext {
+            filmstrips: Arc::new(crate::MediaFilmstrips(Arc::clone(&media))),
+            media,
+            analyzer,
+            cache,
+        }
+    }
 }
 
 impl fmt::Debug for JobContext {
@@ -340,22 +390,88 @@ fn execute(
             },
         )
         .map(JobResult::MusicAnalysis),
-        Job::ProbeMedia(_) => cached(&ctx.cache, path, PROBE_KIND, PROBE_PARAMS, progress, || {
-            ctx.media
-                .probe(path)
-                .map_err(|e| format!("Couldn't read \"{name}\" as a video, photo or song: {e}"))
-        })
-        .map(JobResult::MediaInfo),
-        Job::ReadHilights(_) => cached(
-            &ctx.cache,
-            path,
-            HILIGHTS_KIND,
-            HILIGHTS_PARAMS,
-            progress,
-            || read_hilights(path),
-        )
-        .map(JobResult::Hilights),
+        Job::ProbeMedia(_) => probe_cached(ctx, path, progress).map(JobResult::MediaInfo),
+        Job::ReadHilights(_) => hilights_cached(ctx, path, progress).map(JobResult::Hilights),
+        Job::Filmstrip { files, .. } => filmstrip_cached(ctx, files, progress)
+            .map_err(|e| format!("Couldn't make thumbnails for \"{name}\": {e}"))
+            .map(JobResult::Filmstrip),
     }
+}
+
+/// [`Job::ProbeMedia`]'s work, cache first.
+pub(crate) fn probe_cached(
+    ctx: &JobContext,
+    path: &Path,
+    progress: &mut dyn FnMut(f32),
+) -> Result<MediaInfo, String> {
+    let name = file_label(path);
+    cached(&ctx.cache, path, PROBE_KIND, PROBE_PARAMS, progress, || {
+        ctx.media
+            .probe(path)
+            .map_err(|e| format!("Couldn't read \"{name}\" as a video, photo or song: {e}"))
+    })
+}
+
+/// [`Job::ReadHilights`]'s work, cache first.
+pub(crate) fn hilights_cached(
+    ctx: &JobContext,
+    path: &Path,
+    progress: &mut dyn FnMut(f32),
+) -> Result<Vec<Micros>, String> {
+    cached(
+        &ctx.cache,
+        path,
+        HILIGHTS_KIND,
+        HILIGHTS_PARAMS,
+        progress,
+        || read_hilights(path),
+    )
+}
+
+/// [`Job::Filmstrip`]'s work: every thumbnail from the cache (keyed by the
+/// first file), or all of them freshly generated and stored one JPEG per
+/// cache entry.
+fn filmstrip_cached(
+    ctx: &JobContext,
+    files: &[(PathBuf, Micros)],
+    progress: &mut dyn FnMut(f32),
+) -> Result<Vec<Vec<u8>>, String> {
+    let (first, _) = files.first().ok_or("the item has no files")?;
+    let key = SourceKey::from_file(first)
+        .map_err(|e| format!("Couldn't read \"{}\": {}", file_label(first), io_detail(&e)))?;
+    let params = |i| filmstrip_params(files.len(), i);
+    let hits: Option<Vec<Vec<u8>>> = (0..FILMSTRIP_COUNT)
+        .map(|i| match ctx.cache.get(&key, FILMSTRIP_KIND, &params(i)) {
+            Ok(hit) => hit,
+            Err(e) => {
+                tracing::warn!(?first, error = %e, "cache read failed; regenerating thumbnails");
+                None
+            }
+        })
+        .collect();
+    if let Some(thumbs) = hits {
+        tracing::debug!(?first, "filmstrip cache hit");
+        return Ok(thumbs);
+    }
+    progress(0.1);
+    let thumbs = ctx
+        .filmstrips
+        .generate(files, FILMSTRIP_COUNT, FILMSTRIP_HEIGHT)
+        .map_err(|e| e.to_string())?;
+    if thumbs.len() != FILMSTRIP_COUNT as usize {
+        return Err(format!(
+            "expected {FILMSTRIP_COUNT} thumbnails, got {}",
+            thumbs.len()
+        ));
+    }
+    progress(0.9);
+    for (i, jpeg) in (0..).zip(&thumbs) {
+        if let Err(e) = ctx.cache.put(&key, FILMSTRIP_KIND, &params(i), jpeg) {
+            tracing::warn!(?first, error = %e, "cache write failed");
+            break;
+        }
+    }
+    Ok(thumbs)
 }
 
 /// HiLights of `path`; a file that cannot be read is an error, a file that
@@ -493,6 +609,19 @@ mod tests {
         }
     }
 
+    struct NoFilmstrips;
+
+    impl FilmstripGenerator for NoFilmstrips {
+        fn generate(
+            &self,
+            _files: &[(PathBuf, Micros)],
+            _count: u32,
+            _height: u32,
+        ) -> Result<Vec<Vec<u8>>, Box<dyn Error + Send + Sync>> {
+            Err("no filmstrips in this test".into())
+        }
+    }
+
     struct Fixture {
         dir: tempfile::TempDir,
         media: Arc<FakeMedia>,
@@ -509,6 +638,7 @@ mod tests {
                 media: media.clone(),
                 analyzer: analyzer.clone(),
                 cache: Arc::new(Cache::in_memory().unwrap()),
+                filmstrips: Arc::new(NoFilmstrips),
             };
             let (runner, events) = JobRunner::with_workers(ctx, workers);
             Fixture {
@@ -730,6 +860,7 @@ mod tests {
                 ..Default::default()
             }),
             cache: Arc::new(Cache::in_memory().unwrap()),
+            filmstrips: Arc::new(NoFilmstrips),
         };
         let (runner, events) = JobRunner::new(ctx);
         let dir = tempfile::tempdir().unwrap();
@@ -762,6 +893,7 @@ mod tests {
             media,
             analyzer: Arc::new(Panics),
             cache: Arc::new(Cache::in_memory().unwrap()),
+            filmstrips: Arc::new(NoFilmstrips),
         };
         let (runner, events) = JobRunner::with_workers(ctx, 1);
         let dir = tempfile::tempdir().unwrap();
