@@ -56,7 +56,7 @@
             {
               "media_id": 1,
               "src_in": 1568473,
-              "src_out": 3568473,
+              "src_out": 3693473,
               "timeline_start": 0,
               "transition": {
                 "type": "cut"
@@ -65,71 +65,78 @@
             },
             {
               "media_id": 1,
-              "src_in": 6029119,
-              "src_out": 8029119,
-              "timeline_start": 2000000,
+              "src_in": 5904119,
+              "src_out": 8154119,
+              "timeline_start": 1875000,
               "transition": {
-                "type": "cut"
+                "type": "crossfade",
+                "duration": 250000
               },
               "speed": 100
             },
             {
               "media_id": 2,
-              "src_in": 2172675,
-              "src_out": 4172675,
-              "timeline_start": 4000000,
+              "src_in": 2047675,
+              "src_out": 4297675,
+              "timeline_start": 3875000,
               "transition": {
-                "type": "cut"
+                "type": "crossfade",
+                "duration": 250000
               },
               "speed": 100
             },
             {
               "media_id": 3,
-              "src_in": 728454,
-              "src_out": 2728454,
-              "timeline_start": 6000000,
+              "src_in": 603454,
+              "src_out": 2853454,
+              "timeline_start": 5875000,
               "transition": {
-                "type": "cut"
+                "type": "crossfade",
+                "duration": 250000
               },
               "speed": 100
             },
             {
               "media_id": 3,
-              "src_in": 4547970,
-              "src_out": 6547970,
-              "timeline_start": 8000000,
+              "src_in": 4422970,
+              "src_out": 6672970,
+              "timeline_start": 7875000,
               "transition": {
-                "type": "cut"
+                "type": "crossfade",
+                "duration": 250000
               },
               "speed": 100
             },
             {
               "media_id": 4,
-              "src_in": 4944833,
-              "src_out": 6944833,
-              "timeline_start": 10000000,
+              "src_in": 4819833,
+              "src_out": 7069833,
+              "timeline_start": 9875000,
               "transition": {
-                "type": "cut"
+                "type": "crossfade",
+                "duration": 250000
               },
               "speed": 100
             },
             {
               "media_id": 4,
-              "src_in": 8981518,
-              "src_out": 10981518,
-              "timeline_start": 12000000,
+              "src_in": 8856518,
+              "src_out": 11106518,
+              "timeline_start": 11875000,
               "transition": {
-                "type": "cut"
+                "type": "crossfade",
+                "duration": 250000
               },
               "speed": 100
             },
             {
               "media_id": 4,
-              "src_in": 13367561,
+              "src_in": 13242561,
               "src_out": 14367561,
-              "timeline_start": 14000000,
+              "timeline_start": 13875000,
               "transition": {
-                "type": "cut"
+                "type": "crossfade",
+                "duration": 250000
               },
               "speed": 100
             }
