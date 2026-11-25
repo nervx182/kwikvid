@@ -129,6 +129,7 @@ impl Session {
         write_json_atomic(&file, history.project())?;
 
         tracing::info!(file = %file.display(), "project saved as");
+        self.thumbnails.rebase(&self.media_root, &dir);
         self.saved = history.project().clone();
         self.history = history;
         self.media_root = dir;
@@ -166,6 +167,7 @@ impl Session {
             revision: 0,
             file: Some(file),
             music: Default::default(),
+            thumbnails: Default::default(),
         };
         let missing = session.missing_files();
         tracing::info!(

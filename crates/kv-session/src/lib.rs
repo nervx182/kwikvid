@@ -10,8 +10,8 @@
 //! and the recent projects list ([`Session::save_as`], [`Session::save`],
 //! [`Session::open`], [`RecentProjects`]), and in background jobs
 //! ([`JobRunner`]) through injected backends and `kv-cache`.
-//! Regenerate/re-roll lives in [`regen`]; later modules add import and
-//! export.
+//! Regenerate/re-roll lives in [`regen`], import and library thumbnails in
+//! [`import`]; a later module adds export.
 //!
 //! # Paths
 //!
@@ -35,6 +35,8 @@
 
 mod analysis;
 mod error;
+mod filmstrips;
+pub mod import;
 mod jobs;
 mod paths;
 mod project_file;
@@ -42,6 +44,10 @@ pub mod regen;
 
 pub use analysis::{AudioAnalyzer, MusicAnalyzer};
 pub use error::SessionError;
+pub use filmstrips::{
+    FilmstripGenerator, MediaFilmstrips, FILMSTRIP_COUNT, FILMSTRIP_HEIGHT, FILMSTRIP_JPEG_QUALITY,
+};
+pub use import::{ImportReport, IMPORT_EXTENSIONS};
 pub use jobs::*;
 pub use project_file::{
     rebase, MissingFile, MissingKind, ProjectFileError, RecentProjects, PROJECT_EXTENSION,
@@ -80,6 +86,8 @@ pub struct Session {
     saved: Project,
     /// Finished music analyses (see [`Session::music_analysis`]).
     music: analysis::MusicAnalyses,
+    /// Finished filmstrips (see [`Session::thumbnail`]).
+    thumbnails: import::Thumbnails,
     /// The project file, once opened or saved.
     file: Option<PathBuf>,
 }
@@ -95,6 +103,7 @@ impl Session {
             media_root,
             revision: 0,
             music: Default::default(),
+            thumbnails: Default::default(),
             file: None,
         }
     }

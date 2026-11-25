@@ -3,7 +3,7 @@
 | Phase | Delivers | Gate |
 | --- | --- | --- |
 | M0 Foundation | Repo, CI gate, AGENTS.md, fixtures, kv-core types, Tauri preview spike | Gate green; 60 fps preview proven in Tauri |
-| M1 Headless engine | Probe, HiLights, beat analysis, auto-edit, CLI render to MP4, first MCP tools | CLI turns 10 GoPro clips + a song into a beat-synced MP4 on Mac |
+| M1 Headless engine | Probe, HiLights, beat analysis, auto-edit, CLI render to MP4, first MCP tools | CLI turns 10 GoPro clips + a song into a beat-synced MP4 on Mac. Automated: [`m1_gate.rs`](../crates/kv-cli/tests/m1_gate.rs) (merge gate, Linux and Mac); real footage and owner sign-off: #106 |
 | M2 Desktop MVP | Library, timeline, preview, pin/exclude, styles, export, projects | All MVP features pass; owner signs off Quik parity |
 | Roadmap I | Speed targets, full MCP surface, camera import, GoPro cloud (opt-in), polish | Perf targets met on M1; MCP drives a full edit |
 | Roadmap II | Long projects, multiple music tracks, story sections, auto chapters | 10 min story with 3 tracks exports without manual stitching |
