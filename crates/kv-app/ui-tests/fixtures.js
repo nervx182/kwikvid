@@ -39,6 +39,8 @@ class Mock {
    * `values` gives standing answers for commands that do not return a
    * Snapshot, e.g. { project_info: { snapshot, file: null, missing: [] } }.
    * `beats`: what get_beats answers (default null, "not analysed yet").
+   * `values` gives standing answers for invoke() commands that do not
+   * return a Snapshot, e.g. { import: report }.
    */
   async open(snapshot = snapshots.initial, { values = {}, beats = null } = {}) {
     await this.page.addInitScript((init) => {

@@ -15,9 +15,11 @@ tauri-build = { version = "2.5", features = [] }
 
 [dependencies]
 anyhow = "1"
+kv-cache = { path = "../kv-cache" }
 kv-core = { path = "../kv-core" }
-# `VideoFrame` only; no FFmpeg.
-kv-media = { path = "../kv-media", default-features = false }
+# `VideoFrame`, plus probe, decode and filmstrips for import (FFmpeg, LGPL
+# dynamic build; ADR 0005).
+kv-media = { path = "../kv-media" }
 # Preview compositor, `FrameSink`, `GpuContext` (ADR 0007).
 kv-render = { path = "../kv-render" }
 kv-session = { path = "../kv-session" }

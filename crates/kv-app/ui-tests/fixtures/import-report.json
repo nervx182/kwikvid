@@ -1,0 +1,13 @@
+{
+  "added": [
+    1,
+    2,
+    3
+  ],
+  "skipped": [
+    [
+      "/home/ana/DCIM/100GOPRO/GOPR0007.JPG",
+      "Only MP4 and MOV videos can be imported for now."
+    ]
+  ]
+}
