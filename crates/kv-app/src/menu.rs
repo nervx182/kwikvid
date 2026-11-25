@@ -51,7 +51,9 @@ fn accelerator(id: &str) -> &'static str {
 pub enum MenuAction {
     New,
     Open,
-    OpenRecent { path: PathBuf },
+    OpenRecent {
+        path: PathBuf,
+    },
     Save,
     SaveAs,
     /// Quit (or close the window); the UI asks about unsaved changes first.
@@ -102,7 +104,11 @@ fn item<R: Runtime>(
 ) -> tauri::Result<tauri::menu::MenuItem<R>> {
     let b = MenuItemBuilder::with_id(id, text);
     let acc = accelerator(id);
-    let b = if acc.is_empty() { b } else { b.accelerator(acc) };
+    let b = if acc.is_empty() {
+        b
+    } else {
+        b.accelerator(acc)
+    };
     b.build(app)
 }
 
@@ -211,7 +217,10 @@ mod tests {
     fn actions_serialise_as_tagged_json() {
         let j = |a: MenuAction| serde_json::to_value(a).unwrap();
         assert_eq!(j(MenuAction::New), serde_json::json!({"action": "new"}));
-        assert_eq!(j(MenuAction::SaveAs), serde_json::json!({"action": "save_as"}));
+        assert_eq!(
+            j(MenuAction::SaveAs),
+            serde_json::json!({"action": "save_as"})
+        );
         assert_eq!(
             j(MenuAction::OpenRecent {
                 path: PathBuf::from("/p/a.kwikvid")

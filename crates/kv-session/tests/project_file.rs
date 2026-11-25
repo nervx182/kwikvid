@@ -3,7 +3,7 @@
 
 use kv_core::*;
 use kv_session::{
-    MissingFile, MissingKind, ProjectFileError, RecentProjects, Session, SessionError,
+    Job, MissingFile, MissingKind, ProjectFileError, RecentProjects, Session, SessionError,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -397,4 +397,37 @@ fn rebase_errors_surface_as_path_errors() {
         "{err:?}"
     );
     assert!(file_names(tmp.path()).is_empty());
+}
+
+#[test]
+fn reopen_jobs_cover_existing_media_and_music_only() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let mut s = session_with_media(root);
+    let file = root.join("trip").join("trip.kwikvid");
+    s.save_as(&file).unwrap();
+
+    let (opened, _) = Session::open(&file).unwrap();
+    let clip = |n: u32| root.join("trip").join("clips").join(format!("GX0{n}.MP4"));
+    let song = root.join("music").join("song.mp3");
+    assert_eq!(
+        opened.reopen_jobs(),
+        vec![
+            Job::AnalyzeMusic(song.clone()),
+            Job::ProbeMedia(clip(1)),
+            Job::ReadHilights(clip(1)),
+            Job::ProbeMedia(clip(2)),
+            Job::ReadHilights(clip(2)),
+        ]
+    );
+
+    // Missing files get no jobs.
+    fs::remove_file(clip(2)).unwrap();
+    fs::remove_file(&song).unwrap();
+    let (opened, missing) = Session::open(&file).unwrap();
+    assert_eq!(missing.len(), 2);
+    assert_eq!(
+        opened.reopen_jobs(),
+        vec![Job::ProbeMedia(clip(1)), Job::ReadHilights(clip(1))]
+    );
 }

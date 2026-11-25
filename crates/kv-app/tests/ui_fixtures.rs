@@ -84,7 +84,8 @@ fn fixtures() -> Vec<(&'static str, Snapshot)> {
     // `edited` (revision 1): clean, no history, revision 2.
     let mut p = Session::new(dir.path().to_path_buf());
     for (id, name) in [(1, "GX010001"), (2, "GX010002"), (3, "GX010003")] {
-        p.apply(clip(id, &format!("clips/{name}.MP4"))).expect("add clip");
+        p.apply(clip(id, &format!("clips/{name}.MP4")))
+            .expect("add clip");
     }
     let file = dir.path().join("trip.kwikvid");
     p.save_as(&file).expect("save project");

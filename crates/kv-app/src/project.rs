@@ -132,11 +132,7 @@ pub fn start_new(state: &AppState, media_root: PathBuf) -> Result<ProjectState, 
 /// top of the recent list. The project opens even when media files are
 /// missing; they are listed in [`ProjectState::missing`]. A file that no
 /// longer exists is dropped from the recent list.
-pub fn open(
-    state: &AppState,
-    files: &ProjectFiles,
-    path: &Path,
-) -> Result<ProjectState, IpcError> {
+pub fn open(state: &AppState, files: &ProjectFiles, path: &Path) -> Result<ProjectState, IpcError> {
     let mut session = state.session()?;
     let (mut opened, missing) = match Session::open(path) {
         Ok(r) => r,

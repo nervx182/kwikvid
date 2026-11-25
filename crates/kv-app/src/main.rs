@@ -25,8 +25,8 @@ use anyhow::Context as _;
 use ipc::{AppState, IpcError, STATE_EVENT};
 use kv_core::Command;
 use kv_session::{Session, Snapshot};
-use tauri::webview::PageLoadEvent;
 use project::ProjectFiles;
+use tauri::webview::PageLoadEvent;
 use tauri::{AppHandle, Emitter, Listener, Manager, RunEvent, Runtime, State, WindowEvent};
 
 /// How long `--smoke` waits for the first `kv://state` event.
