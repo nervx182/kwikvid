@@ -48,6 +48,15 @@ export function seek(position) {
   return call("seek", { position });
 }
 
+/**
+ * Re-roll a section's auto-edit (next seed, pins kept). Resolves to the new
+ * snapshot (with manual_edits_replaced); rejects when the edit cannot be
+ * built (no clips, no music, ...), changing nothing.
+ */
+export function reroll(section) {
+  return call("reroll", { section });
+}
+
 /** The current Snapshot (snake_case keys, see kv-session). */
 export function getState() {
   return call("get_state");
