@@ -1,0 +1,69 @@
+/* Project files: unsaved-changes prompt and missing-media banner. */
+.project-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 80px;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 20;
+}
+.project-modal {
+  width: 380px;
+  background: var(--pane);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 16px 18px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+.project-modal h3 {
+  margin: 0 0 6px;
+  font-size: 14px;
+}
+.project-modal p {
+  margin: 0 0 14px;
+  color: var(--muted);
+}
+.project-modal-buttons {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.project-modal-buttons button:first-child {
+  margin-right: auto;
+}
+.project-modal-buttons .primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.missing-media {
+  position: fixed;
+  top: 48px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(560px, calc(100vw - 32px));
+  max-height: 40vh;
+  overflow: auto;
+  background: #3a3220;
+  border: 1px solid #7a6531;
+  color: #fdf3dc;
+  border-radius: 8px;
+  padding: 8px 12px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  z-index: 10;
+  user-select: text;
+}
+.missing-media-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.missing-media ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+  word-break: break-all;
+}

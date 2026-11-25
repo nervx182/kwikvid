@@ -1,0 +1,58 @@
+{
+  "revision": 2,
+  "project": {
+    "version": 1,
+    "id": 1,
+    "media": [
+      {
+        "id": 1,
+        "path": "clips/GX010001.MP4",
+        "duration": 12000000,
+        "kind": "video",
+        "hilights": [],
+        "clip_audio": false
+      },
+      {
+        "id": 2,
+        "path": "clips/GX010002.MP4",
+        "duration": 12000000,
+        "kind": "video",
+        "hilights": [],
+        "clip_audio": false
+      },
+      {
+        "id": 3,
+        "path": "clips/GX010003.MP4",
+        "duration": 12000000,
+        "kind": "video",
+        "hilights": [],
+        "clip_audio": false
+      }
+    ],
+    "sections": [
+      {
+        "id": 1,
+        "music": null,
+        "target_length": {
+          "type": "full_song"
+        },
+        "pins": [],
+        "excludes": [],
+        "seed": 0,
+        "edit": {
+          "segments": []
+        },
+        "style": "cut",
+        "title": null
+      }
+    ],
+    "settings": {
+      "aspect_ratio": "landscape16x9",
+      "music_volume_percent": 100
+    }
+  },
+  "can_undo": false,
+  "can_redo": false,
+  "dirty": false,
+  "media_root": "/home/ana/Movies/trip"
+}
