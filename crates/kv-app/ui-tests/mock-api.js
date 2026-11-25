@@ -6,9 +6,12 @@
 // which the Node-side helpers in fixtures.js drive with page.evaluate():
 //
 //   state      the Snapshot every call returns (set by mock.state()).
+//   beats      what get_beats returns (set by mock.open(s, { beats }) or
+//              mock.beats()); null means "no analysis yet".
 //   commands   every call the UI made, in order: { command, args? }.
 //   responses  queued one-shot answers: { command, snapshot } or
 //              { command, error } (set by mock.respond() / mock.fail()).
+//              For get_beats and seek, only { command, error } applies.
 //
 // Keep it plain: no imports, no Tauri, nothing a feature would need to edit.
 // Features test new commands through apply() and the queues above.
@@ -17,6 +20,7 @@ const init = window.__kvMockInit || {};
 
 const mock = {
   state: init.state ?? null,
+  beats: init.beats ?? null,
   commands: [],
   responses: [],
   listeners: new Set(),
@@ -29,11 +33,22 @@ const mock = {
 };
 window.__kvMock = mock;
 
-function call(command, args) {
+function record(command, args) {
   mock.commands.push(args === undefined ? { command } : { command, args: structuredClone(args) });
   const i = mock.responses.findIndex((r) => r.command === command);
-  if (i >= 0) {
-    const [r] = mock.responses.splice(i, 1);
+  return i >= 0 ? mock.responses.splice(i, 1)[0] : null;
+}
+
+/** A command that returns a value, not a snapshot. */
+function query(command, args, value) {
+  const r = record(command, args);
+  if (r && r.error !== undefined) return Promise.reject({ message: r.error });
+  return Promise.resolve(structuredClone(value));
+}
+
+function call(command, args) {
+  const r = record(command, args);
+  if (r) {
     if (r.error !== undefined) return Promise.reject({ message: r.error });
     mock.state = r.snapshot;
   }
@@ -59,11 +74,18 @@ export function getState() {
   return call("get_state");
 }
 
+export function getBeats(section) {
+  return query("get_beats", { section }, mock.beats);
+}
+
+export function seek(position) {
+  return query("seek", { position }, Math.max(0, position));
+}
+
 // The viewer rectangle for the native preview layer; resolves to null like
 // the real command.
 export function setViewerRect(rect) {
-  mock.commands.push({ command: "set_viewer_rect", args: structuredClone(rect) });
-  return Promise.resolve(null);
+  return query("set_viewer_rect", rect, null);
 }
 
 export function onState(cb) {

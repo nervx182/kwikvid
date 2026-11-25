@@ -25,7 +25,7 @@ impl AppState {
         }
     }
 
-    fn session(&self) -> Result<MutexGuard<'_, Session>, IpcError> {
+    pub(crate) fn session(&self) -> Result<MutexGuard<'_, Session>, IpcError> {
         // A panic while the lock was held may have left the session half
         // changed, so refuse to keep working on it rather than recover.
         self.session.lock().map_err(|_| IpcError {

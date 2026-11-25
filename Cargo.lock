@@ -2468,6 +2468,7 @@ name = "kv-app"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "kv-audio",
  "kv-core",
  "kv-media",
  "kv-render",

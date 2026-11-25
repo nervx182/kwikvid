@@ -122,7 +122,8 @@ fn exports_tagged_edit_with_crossfade_and_music() {
 
     // 1 s + 1 s - 0.5 s overlap + 1 s + 0.8 s = 3.3 s = 99 frames.
     let edl = &project.sections[0].edit;
-    let frame_plan = plan(edl, Rational::new(FPS, 1)).unwrap();
+    let source_fps = |_: MediaId| Some(Rational::new(FPS, 1));
+    let frame_plan = plan(edl, Rational::new(FPS, 1), &source_fps).unwrap();
     assert_eq!(frame_plan.len(), 99);
     assert_eq!(report.frames, 99);
     assert_eq!(report.duration, us(3.3));
@@ -206,6 +207,97 @@ fn exports_tagged_edit_with_crossfade_and_music() {
         (dur - 3_300_000).abs() <= 1_000_000 / i128::from(FPS),
         "audio stream lasts {dur} us"
     );
+}
+
+/// A 30 fps tagged clip at speed 50 exported at 30 fps: even output frames
+/// are source frames (clean tags, consecutive), odd ones 50/50 blends of
+/// the source frames on either side (unreadable tags).
+#[test]
+fn slow_motion_blends_in_between_frames() {
+    const CLIP: u8 = 6;
+    let music = click_track(120.0, 8.0, 44_100);
+    let root = music.parent().unwrap().to_path_buf();
+    let path = tagged_clip(&ClipSpec {
+        clip: CLIP,
+        ..ClipSpec::default()
+    });
+    let mut p = Project::new(ProjectId(1));
+    p.media.push(MediaItem {
+        id: MediaId(1),
+        path: rel(&root, &path),
+        duration: us(2.0),
+        kind: MediaKind::Video,
+        hilights: vec![],
+        clip_audio: false,
+        chapters: Vec::new(),
+    });
+    // Source frames 6..36 (0.2 s .. 1.2 s) over 2 s.
+    let mut edl = Edl {
+        segments: vec![Segment {
+            speed: Speed(50),
+            ..seg(1, 0.2, 1.2, Transition::Cut)
+        }],
+    };
+    edl.repack();
+    p.sections[0].edit = edl;
+
+    let backend = FfmpegBackend::new().unwrap();
+    let out = out_dir().join("slowmo.mp4");
+    let _ = std::fs::remove_file(&out);
+    let report = export(
+        &p,
+        Project::DEFAULT_SECTION,
+        &root,
+        &backend,
+        &backend,
+        &out,
+        &settings(),
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(report.frames, 60);
+
+    let source_fps = |_: MediaId| Some(Rational::new(FPS, 1));
+    let frame_plan = plan(&p.sections[0].edit, Rational::new(FPS, 1), &source_fps).unwrap();
+    let tags = kv_testkit::read_clip_tags(&out);
+    assert_eq!(tags.len(), 60, "frame count");
+    let src_frame = |t: Micros| (t.0 * i64::from(FPS) + 500_000) / 1_000_000;
+    for (f, tag) in frame_plan.iter().zip(&tags) {
+        let k = f.index as usize;
+        let j = 6 + k / 2; // source frame at or before the exact time
+        if k % 2 == 0 || k == 59 {
+            // On a source frame (frame 59 holds the last frame before
+            // src_out): a clean tag of exactly that frame.
+            assert_eq!(f.layers.len(), 1, "frame {k}");
+            assert_eq!(src_frame(f.layers[0].src_time), j as i64, "frame {k}");
+            assert_eq!(
+                *tag,
+                Some(FrameTag {
+                    clip: CLIP,
+                    frame: j as u16
+                }),
+                "frame {k}"
+            );
+        } else {
+            // In between: frames j and j + 1 at half weight each, and the
+            // neighbours are exactly those frames.
+            let layers: Vec<(i64, f32)> = f
+                .layers
+                .iter()
+                .map(|l| (src_frame(l.src_time), l.weight))
+                .collect();
+            assert_eq!(layers.len(), 2, "frame {k}: {layers:?}");
+            assert_eq!((layers[0].0, layers[1].0), (j as i64, j as i64 + 1));
+            assert!(
+                layers.iter().all(|l| (l.1 - 0.5).abs() < 1e-3),
+                "{layers:?}"
+            );
+            assert_eq!(*tag, None, "frame {k} is a blend, read {tag:?}");
+            let frame_of = |t: &Option<FrameTag>| t.map(|t| t.frame as usize);
+            assert_eq!(frame_of(&tags[k - 1]), Some(j), "before frame {k}");
+            assert_eq!(frame_of(&tags[k + 1]), Some(j + 1), "after frame {k}");
+        }
+    }
 }
 
 #[test]
