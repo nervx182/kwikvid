@@ -25,3 +25,7 @@ all = { level = "warn", priority = -1 }
 
 [profile.dev.package."*"]
 opt-level = 2
+
+# Fixture generation (tagged clips, click tracks) runs in many gate tests.
+[profile.dev.package.kv-testkit]
+opt-level = 2

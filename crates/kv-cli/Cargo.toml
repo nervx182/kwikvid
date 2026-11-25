@@ -27,6 +27,8 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["f
 
 [dev-dependencies]
 assert_cmd = "2"
+# Same crate as kv-media; the M1 gate test decodes the exported audio.
+ffmpeg-next = { version = "9.1", default-features = false, features = ["codec", "format"] }
 insta = "1"
 # `video`: tagged MP4 clips for the end-to-end render test.
 kv-testkit = { path = "../kv-testkit", features = ["video"] }
