@@ -40,11 +40,11 @@ impl MusicAnalyzer for Counting {
 }
 
 fn analyze_once(cache_file: &Path, song: &Path, analyzer: Arc<Counting>) -> MusicAnalysis {
-    let ctx = JobContext {
-        media: Arc::new(NoMedia),
+    let ctx = JobContext::new(
+        Arc::new(NoMedia),
         analyzer,
-        cache: Arc::new(Cache::open(cache_file).unwrap()),
-    };
+        Arc::new(Cache::open(cache_file).unwrap()),
+    );
     let (runner, events) = JobRunner::new(ctx);
     let id = runner.submit(Job::AnalyzeMusic(song.to_path_buf()));
     loop {

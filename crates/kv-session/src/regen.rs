@@ -285,7 +285,7 @@ impl RegenSnapshot {
 
 impl Session {
     /// Apply several commands as one undo step and bump the revision.
-    fn apply_group(&mut self, cmds: Vec<Command>) -> Result<Snapshot, SessionError> {
+    pub(crate) fn apply_group(&mut self, cmds: Vec<Command>) -> Result<Snapshot, SessionError> {
         self.history.apply_group(cmds)?;
         self.revision += 1;
         tracing::debug!(revision = self.revision, "command group applied");

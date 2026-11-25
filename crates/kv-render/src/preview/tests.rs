@@ -6,7 +6,8 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex as StdMutex;
 
-use kv_core::{MediaItem, MediaKind, ProjectId, Segment, Speed, Transition};
+use kv_audio::{render_music_bed, MusicBedOptions, PcmAudio};
+use kv_core::{MediaItem, MediaKind, MusicRef, ProjectId, Segment, Speed, Transition};
 use kv_media::{MediaInfo, VideoInfo};
 use kv_testkit::{read_frame_tag, render_tagged_frame, FrameTag};
 
@@ -631,4 +632,153 @@ fn gpu_compositor_presents_textures() {
     assert_eq!(shown.len(), 2);
     assert_eq!(shown[0].pts, pts(30));
     assert!(shown.iter().all(|s| s.size == (W, H)));
+}
+
+// ---- Audio: the music bed plays in sync and the device clock drives video.
+
+const AUDIO_RATE: u32 = 8_000;
+
+struct AudioRig {
+    engine: PreviewEngine,
+    out: NullOutput,
+    wall: Arc<ManualClock>,
+    shown: Arc<StdMutex<Vec<Shown>>>,
+    /// The bed the engine should be playing, rendered independently.
+    bed: PcmAudio,
+}
+
+impl AudioRig {
+    fn new(volume_percent: u8) -> AudioRig {
+        let music = kv_testkit::click_track(120.0, 3.0, AUDIO_RATE);
+        let mut project = three_segments();
+        project.sections[0].music = Some(MusicRef {
+            path: music.to_str().unwrap().to_string(),
+            duration: Micros(3_000_000),
+        });
+        project.settings.music_volume_percent = volume_percent;
+
+        // The device: mono at 8 kHz, pulled by hand (see `pull`).
+        let wall = Arc::new(ManualClock::new());
+        let transport = AudioTransport::new(AUDIO_RATE, 1, wall.clone());
+        let mut out = NullOutput::new(AUDIO_RATE, 1);
+        out.start(Arc::clone(&transport)).unwrap();
+
+        let shown = Arc::new(StdMutex::new(Vec::new()));
+        let sink = Recorder {
+            shown: Arc::clone(&shown),
+            clock: wall.clone(),
+        };
+        let config = PreviewConfig {
+            fps: FPS,
+            media_root: PathBuf::from("/media"),
+            decode_threads: 2,
+            max_wait: WAIT,
+            // Must be ignored in favour of the audio clock.
+            clock: Arc::new(ManualClock::new()),
+            audio: Some(transport),
+            ..PreviewConfig::default()
+        };
+        let engine = PreviewEngine::new(
+            Arc::new(FakeMedia::default()),
+            Box::new(CpuCompositor::new(W, H).unwrap()),
+            Box::new(sink),
+            config,
+        )
+        .unwrap();
+        engine.set_edit(&project, Project::DEFAULT_SECTION).unwrap();
+
+        let mut opts = MusicBedOptions::new(AUDIO_RATE, 1, Micros(2_000_000));
+        opts.fade_out = crate::MUSIC_FADE_OUT;
+        let bed = render_music_bed(&music, &opts).unwrap();
+        AudioRig {
+            engine,
+            out,
+            wall,
+            shown,
+            bed,
+        }
+    }
+
+    /// The device plays `ms` milliseconds (no latency): it pulls the
+    /// buffer, then that much wall time passes while it is heard, so the
+    /// clock ends at the buffer's end.
+    fn pull(&self, ms: usize) -> Vec<f32> {
+        let got = self.out.pull(ms * AUDIO_RATE as usize / 1_000, Micros(0));
+        self.wall.advance(Micros(ms as i64 * 1_000));
+        got
+    }
+
+    fn bed_at(&self, ms: usize, len_ms: usize) -> &[f32] {
+        let f = AUDIO_RATE as usize / 1_000;
+        &self.bed.samples[ms * f..(ms + len_ms) * f]
+    }
+
+    fn tick_until_presented(&self) -> u64 {
+        for _ in 0..100 {
+            if let Tick::Presented(k) = self.engine.tick().unwrap() {
+                return k;
+            }
+        }
+        panic!("nothing presented");
+    }
+}
+
+#[test]
+fn audio_clock_drives_playback_and_plays_the_bed_from_the_playhead() {
+    let rig = AudioRig::new(100);
+    assert!(rig.bed.samples.iter().any(|s| s.abs() > 0.1), "clicks");
+    // Paused: the device plays silence and the picture stays put.
+    assert!(rig.pull(100).iter().all(|s| *s == 0.0));
+    assert_eq!(rig.engine.position(), Micros(0));
+
+    rig.engine.play();
+    // Nothing moves until the device plays.
+    assert_eq!(rig.engine.position(), Micros(0));
+    assert_eq!(rig.tick_until_presented(), 0);
+    // Each 100 ms the device plays is the next 100 ms of the bed, and the
+    // frame due at that position is what gets shown.
+    for step in 0..5 {
+        let got = rig.pull(100);
+        assert_eq!(got, rig.bed_at(step * 100, 100), "audio step {step}");
+        let pos = Micros((step as i64 + 1) * 100_000);
+        assert_eq!(rig.engine.position(), pos);
+        let k = rig.tick_until_presented();
+        assert_eq!(k, index_at(FPS, pos, u64::MAX).unwrap());
+        assert_eq!(lock(&rig.shown).last().unwrap().tag, Some(expected(k)));
+    }
+
+    // Seek while playing: the next buffer is the bed at the target and the
+    // picture follows from there.
+    rig.engine.seek(Micros(1_200_000));
+    assert_eq!(rig.engine.position(), Micros(1_200_000));
+    assert_eq!(rig.pull(50), rig.bed_at(1_200, 50));
+    assert_eq!(rig.engine.position(), Micros(1_250_000));
+    assert_eq!(rig.tick_until_presented(), 37);
+
+    // Pause: silence, and the position stays where it was.
+    rig.engine.pause();
+    assert!(rig.pull(100).iter().all(|s| *s == 0.0));
+    assert_eq!(rig.engine.position(), Micros(1_250_000));
+
+    // Seek while paused, then play: the bed resumes at the new playhead.
+    rig.engine.seek(Micros(300_000));
+    rig.engine.play();
+    assert_eq!(rig.pull(20), rig.bed_at(300, 20));
+    assert_eq!(rig.engine.position(), Micros(320_000));
+
+    // Past the end the engine stops and so does the sound.
+    rig.pull(2_000);
+    rig.engine.tick().unwrap();
+    assert!(!rig.engine.is_playing());
+    assert!(rig.pull(50).iter().all(|s| *s == 0.0));
+}
+
+#[test]
+fn audio_uses_the_project_music_volume() {
+    let rig = AudioRig::new(50);
+    rig.engine.play();
+    let got = rig.pull(500);
+    for (g, b) in got.iter().zip(rig.bed_at(0, 500)) {
+        assert!((g - b * 0.5).abs() < 1e-6, "{g} vs {b}");
+    }
 }
