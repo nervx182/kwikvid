@@ -12,6 +12,7 @@ import { initLibrary, renderLibrary } from "./library.js";
 import { initInspector, renderInspector } from "./inspector.js";
 import { initTransport, renderTransport } from "./transport.js";
 import { initStyles, renderStyles } from "./styles.js";
+import { initMusic, renderMusic } from "./music.js";
 
 let current = null;
 
@@ -27,6 +28,7 @@ function render(snapshot) {
   renderLibrary(snapshot);
   renderInspector(snapshot);
   renderStyles(snapshot);
+  renderMusic(snapshot);
   renderSummary(snapshot);
   renderProject(snapshot);
 }
@@ -71,6 +73,7 @@ initAutoEdit(run, render);
 initLibrary(run);
 initInspector(render);
 initStyles(run);
+initMusic(run);
 initViewer(document.querySelector('[data-testid="viewer"]'), api.setViewerRect);
 api.onState(render);
 run(api.getState());

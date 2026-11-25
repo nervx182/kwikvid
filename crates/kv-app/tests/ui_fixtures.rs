@@ -516,6 +516,22 @@ fn fixtures() -> Vec<(&'static str, Snapshot)> {
         })
         .expect("remove");
 
+    // The music picker: the song set (what the backend applies when its
+    // analysis is done), then removed again.
+    let mut s = session();
+    let music_set = s
+        .apply(Command::SetMusic {
+            section: S,
+            music: Some(song()),
+        })
+        .expect("set music");
+    let music_removed = s
+        .apply(Command::SetMusic {
+            section: S,
+            music: None,
+        })
+        .expect("remove music");
+
     vec![
         ("initial", initial),
         ("edited", edited),
@@ -528,6 +544,8 @@ fn fixtures() -> Vec<(&'static str, Snapshot)> {
         ("timeline-edit", timeline_edit()),
         ("library", library),
         ("library-removed", library_removed),
+        ("music-set", music_set),
+        ("music-removed", music_removed),
     ]
 }
 
