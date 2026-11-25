@@ -2454,6 +2454,7 @@ dependencies = [
  "anyhow",
  "assert_cmd",
  "clap",
+ "ffmpeg-next",
  "insta",
  "kv-audio",
  "kv-autoedit",
