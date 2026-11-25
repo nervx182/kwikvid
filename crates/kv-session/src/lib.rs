@@ -6,10 +6,12 @@
 //! layer over this crate, so everything here is unit-testable without a
 //! webview. One `Session` per window/project.
 //!
-//! The crate has no platform code. The only file I/O is project save/open
+//! The crate has no platform code. File I/O happens in project save/open
 //! and the recent projects list ([`Session::save_as`], [`Session::save`],
-//! [`Session::open`], [`RecentProjects`]). Regenerate/re-roll lives in
-//! [`regen`]; later modules add background jobs, import and export.
+//! [`Session::open`], [`RecentProjects`]), and in background jobs
+//! ([`JobRunner`]) through injected backends and `kv-cache`.
+//! Regenerate/re-roll lives in [`regen`]; later modules add import and
+//! export.
 //!
 //! # Paths
 //!
@@ -31,12 +33,16 @@
 //!  "can_redo":false,"dirty":true,"media_root":"/Users/ana"}
 //! ```
 
+mod analysis;
 mod error;
+mod jobs;
 mod paths;
 mod project_file;
 pub mod regen;
 
+pub use analysis::{AudioAnalyzer, MusicAnalyzer};
 pub use error::SessionError;
+pub use jobs::*;
 pub use project_file::{
     rebase, MissingFile, MissingKind, ProjectFileError, RecentProjects, PROJECT_EXTENSION,
 };
@@ -72,6 +78,8 @@ pub struct Session {
     revision: u64,
     /// The project as last saved (or as created).
     saved: Project,
+    /// Finished music analyses (see [`Session::music_analysis`]).
+    music: analysis::MusicAnalyses,
     /// The project file, once opened or saved.
     file: Option<PathBuf>,
 }
@@ -86,6 +94,7 @@ impl Session {
             history: History::new(project),
             media_root,
             revision: 0,
+            music: Default::default(),
             file: None,
         }
     }

@@ -2543,8 +2543,13 @@ dependencies = [
 name = "kv-session"
 version = "0.0.1"
 dependencies = [
+ "kv-audio",
  "kv-autoedit",
+ "kv-cache",
  "kv-core",
+ "kv-gopro",
+ "kv-media",
+ "kv-testkit",
  "serde",
  "serde_json",
  "tempfile",
