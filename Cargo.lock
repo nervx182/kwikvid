@@ -2485,6 +2485,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "kv-audio",
+ "kv-cache",
  "kv-core",
  "kv-media",
  "kv-render",
