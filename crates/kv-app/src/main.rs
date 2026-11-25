@@ -6,6 +6,8 @@
 //! `get_beats` and `seek`). Each forwards to the
 //! session (see [`ipc`]); after every change the backend emits a `kv://state`
 //! event with the new snapshot. Errors come back as `{ "message": "..." }`.
+//! Project files (New, Open, Save, Save As, recent) are in [`project`]; the
+//! native menu bar, which emits `kv://menu` actions, is in [`menu`].
 //!
 //! `--smoke` quits with code 0 after the first `kv://state` event (sent when
 //! the page has loaded), or with code 3 if none arrives in time. CI and
@@ -21,9 +23,11 @@
 
 mod blit;
 mod ipc;
+mod menu;
 #[cfg(target_os = "macos")]
 mod native_view;
 mod preview;
+mod project;
 mod timeline;
 
 use std::path::PathBuf;
@@ -35,9 +39,12 @@ use kv_core::{Command, SectionId};
 use kv_session::regen::RegenSnapshot;
 use kv_session::{Session, Snapshot};
 use preview::{PreviewBackend, PreviewState, ViewerRect};
+use project::ProjectFiles;
 use serde::Serialize;
 use tauri::webview::PageLoadEvent;
-use tauri::{AppHandle, Emitter, Listener, Manager, Runtime, State, WebviewWindow};
+use tauri::{
+    AppHandle, Emitter, Listener, Manager, RunEvent, Runtime, State, WebviewWindow, WindowEvent,
+};
 
 /// How long `--smoke` waits for the first `kv://state` event.
 const SMOKE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -186,20 +193,33 @@ fn main() -> anyhow::Result<()> {
     let opts = Options::parse(std::env::args().skip(1));
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             apply,
             undo,
             redo,
             get_state,
+            project::project_info,
+            project::new_project,
+            project::open_project,
+            project::save_project,
+            project::save_project_as,
+            project::choose_open_path,
+            project::choose_save_path,
+            project::set_window_title,
+            project::quit,
             reroll,
             set_viewer_rect,
             timeline::get_beats,
-            timeline::seek
+            timeline::seek,
         ])
         .setup(move |app| {
             let root = media_root(app.handle());
             tracing::info!(media_root = %root.display(), "new session");
             app.manage(AppState::new(Session::new(root)));
+            let files = ProjectFiles::load(app.path().app_config_dir().ok());
+            app.set_menu(menu::build(app.handle(), &files.recent())?)?;
+            app.manage(files);
             let backend = PreviewBackend::preferred();
             tracing::info!(backend = backend.name(), "preview backend");
             if opts.preview_test_pattern && backend == PreviewBackend::Off {
@@ -233,8 +253,45 @@ fn main() -> anyhow::Result<()> {
                 }
             }
         })
-        .run(tauri::generate_context!())
-        .context("running the kwikvid app")
+        .on_menu_event(|app, event| {
+            let recent = app.state::<ProjectFiles>().recent();
+            if let Some(action) = menu::action_for(event.id().as_ref(), &recent) {
+                menu::emit_action(app, &action);
+            }
+        })
+        // Closing the window with unsaved changes asks the UI to run the
+        // Save / Don't Save / Cancel prompt; it calls `quit` when done.
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                let app = window.app_handle();
+                if quit_needs_prompt(app) {
+                    api.prevent_close();
+                    menu::emit_action(app, &menu::MenuAction::Quit);
+                }
+            }
+        })
+        .build(tauri::generate_context!())
+        .context("building the kwikvid app")?
+        .run(|app, event| {
+            // A user-initiated exit (no exit code), e.g. Quit from the Dock.
+            if let RunEvent::ExitRequested {
+                code: None, api, ..
+            } = event
+            {
+                if quit_needs_prompt(app) {
+                    api.prevent_exit();
+                    menu::emit_action(app, &menu::MenuAction::Quit);
+                }
+            }
+        });
+    Ok(())
+}
+
+fn quit_needs_prompt<R: Runtime>(app: &AppHandle<R>) -> bool {
+    match (app.try_state::<ProjectFiles>(), app.try_state::<AppState>()) {
+        (Some(files), Some(state)) => files.needs_quit_prompt(&state),
+        _ => false,
+    }
 }
 
 #[cfg(test)]
