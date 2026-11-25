@@ -1,5 +1,5 @@
 // The only module that touches window.__TAURI__. UI tests replace this file
-// with a mock exporting the same five functions.
+// with a mock exporting the same functions.
 //
 // Every function returns a Promise. Failures reject with { message }, a short
 // sentence fit for a toast.
@@ -37,6 +37,14 @@ export function redo() {
 /** The current Snapshot (snake_case keys, see kv-session). */
 export function getState() {
   return call("get_state");
+}
+
+/**
+ * Report the viewer rectangle so the native preview layer can cover it:
+ * { x, y, w, h } in CSS pixels relative to the page, scale = devicePixelRatio.
+ */
+export function setViewerRect(rect) {
+  return call("set_viewer_rect", rect);
 }
 
 /**

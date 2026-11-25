@@ -4,6 +4,7 @@
 import * as api from "./api.js";
 import { showToast } from "./toast.js";
 import { initToolbar, renderToolbar } from "./toolbar.js";
+import { initViewer } from "./viewer.js";
 
 let current = null;
 
@@ -49,6 +50,7 @@ async function run(promise) {
 }
 
 initToolbar(run);
+initViewer(document.querySelector('[data-testid="viewer"]'), api.setViewerRect);
 api.onState(render);
 run(api.getState());
 
