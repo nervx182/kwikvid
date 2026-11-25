@@ -16,15 +16,30 @@ tauri-build = { version = "2.5", features = [] }
 [dependencies]
 anyhow = "1"
 kv-core = { path = "../kv-core" }
+# `VideoFrame` only; no FFmpeg.
+kv-media = { path = "../kv-media", default-features = false }
+# Preview compositor, `FrameSink`, `GpuContext` (ADR 0007).
+kv-render = { path = "../kv-render" }
 kv-session = { path = "../kv-session" }
+# Blocks on wgpu's adapter/device requests (as kv-render). MIT OR Apache-2.0.
+pollster = "0.4"
 serde.workspace = true
 # macos-private-api: transparent webview over the native preview layer (ADR 0007).
 tauri = { version = "2.12", features = ["macos-private-api"] }
 tauri-plugin-dialog = "2"
 tracing = "0.1"
+# Same pin and features as kv-render: the native preview layer shares its device.
+wgpu = { version = "=25.0.2", default-features = false, features = ["wgsl", "metal", "vulkan", "dx12"] }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "ansi"] }
 
+# The native preview layer: an NSView under the webview (ADR 0007).
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSResponder", "NSView", "NSGraphics", "objc2-core-foundation"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSGeometry"] }
+
 [dev-dependencies]
+kv-audio = { path = "../kv-audio" }
 serde_json.workspace = true
 tempfile = "3"
 

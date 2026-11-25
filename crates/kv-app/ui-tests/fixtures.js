@@ -38,11 +38,12 @@ class Mock {
    * Load the UI with `snapshot` as the backend state (default: initial).
    * `values` gives standing answers for commands that do not return a
    * Snapshot, e.g. { project_info: { snapshot, file: null, missing: [] } }.
+   * `beats`: what get_beats answers (default null, "not analysed yet").
    */
-  async open(snapshot = snapshots.initial, { values = {} } = {}) {
+  async open(snapshot = snapshots.initial, { values = {}, beats = null } = {}) {
     await this.page.addInitScript((init) => {
       window.__kvMockInit = init;
-    }, { state: snapshot, values });
+    }, { state: snapshot, values, beats });
     await this.page.goto("/");
     // Fails fast if the real api.js was served instead of the mock.
     await this.page.waitForFunction(() => window.__kvMock !== undefined);
@@ -55,17 +56,29 @@ class Mock {
 
   /**
    * The calls the UI made, in order, as { command, args? }; command is
-   * "apply", "undo", "redo", "get_state" or an invoke() name. Pass a name
-   * to filter.
+   * "apply", "undo", "redo", "get_state", "reroll", "get_beats", "seek" or
+   * an invoke() name. Pass a name to filter.
    */
   async commands(name) {
     const all = await this.page.evaluate(() => window.__kvMock.commands);
     return name === undefined ? all : all.filter((c) => c.command === name);
   }
 
-  /** The next `command` call resolves to `snapshot` (it becomes the state). */
-  async respond(command, snapshot) {
-    await this.page.evaluate((r) => window.__kvMock.responses.push(r), { command, snapshot });
+  /** Set what get_beats answers from now on (null: not analysed yet). */
+  async beats(beats) {
+    await this.page.evaluate((b) => (window.__kvMock.beats = b), beats);
+  }
+
+  /**
+   * The next `command` call resolves to `snapshot` (it becomes the state).
+   * `delayMs`: answer that much later (e.g. to see a busy indicator).
+   */
+  async respond(command, snapshot, { delayMs = 0 } = {}) {
+    await this.page.evaluate((r) => window.__kvMock.responses.push(r), {
+      command,
+      snapshot,
+      delayMs,
+    });
   }
 
   /** The next `command` call resolves to `value`; the state is unchanged. */
@@ -79,10 +92,11 @@ class Mock {
   }
 
   /** The next `command` call rejects with { message }. */
-  async fail(command, message) {
+  async fail(command, message, { delayMs = 0 } = {}) {
     await this.page.evaluate((r) => window.__kvMock.responses.push(r), {
       command,
       error: message,
+      delayMs,
     });
   }
 }

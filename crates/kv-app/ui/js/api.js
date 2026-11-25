@@ -1,5 +1,5 @@
 // The only module that touches window.__TAURI__. UI tests replace this file
-// with a mock exporting the same functions.
+// with a mock (ui-tests/mock-api.js) exporting the same functions.
 //
 // Every function returns a Promise. Failures reject with { message }, a short
 // sentence fit for a toast.
@@ -34,9 +34,40 @@ export function redo() {
   return call("redo");
 }
 
+/**
+ * The beat grid of a section's music: { music, duration, tempo_bpm, beats,
+ * downbeats } (microseconds), or null while there is no music or its
+ * analysis has not finished.
+ */
+export function getBeats(section) {
+  return call("get_beats", { section });
+}
+
+/** Move the playhead to `position` (microseconds); resolves to the position used. */
+export function seek(position) {
+  return call("seek", { position });
+}
+
+/**
+ * Re-roll a section's auto-edit (next seed, pins kept). Resolves to the new
+ * snapshot (with manual_edits_replaced); rejects when the edit cannot be
+ * built (no clips, no music, ...), changing nothing.
+ */
+export function reroll(section) {
+  return call("reroll", { section });
+}
+
 /** The current Snapshot (snake_case keys, see kv-session). */
 export function getState() {
   return call("get_state");
+}
+
+/**
+ * Report the viewer rectangle so the native preview layer can cover it:
+ * { x, y, w, h } in CSS pixels relative to the page, scale = devicePixelRatio.
+ */
+export function setViewerRect(rect) {
+  return call("set_viewer_rect", rect);
 }
 
 /**

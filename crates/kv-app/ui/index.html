@@ -7,6 +7,8 @@
     <link rel="stylesheet" href="css/app.css" />
     <link rel="stylesheet" href="css/toast.css" />
     <link rel="stylesheet" href="css/project.css" />
+    <link rel="stylesheet" href="css/timeline.css" />
+    <link rel="stylesheet" href="css/autoedit.css" />
   </head>
   <body>
     <div class="app">
@@ -30,6 +32,28 @@
       <section class="pane timeline" data-testid="timeline">
         <h2>Timeline</h2>
         <p class="placeholder" id="timeline-summary"></p>
+        <div class="tl" id="timeline-view" data-testid="timeline-view" data-zoom="1">
+          <div class="tl-bar">
+            <span class="tl-lengths">Length <b id="timeline-length" data-testid="timeline-length">0:00.0</b> · Target <b id="timeline-target" data-testid="timeline-target">–</b></span>
+            <div class="tl-zoom">
+              <button type="button" id="timeline-zoom-out" data-testid="timeline-zoom-out" title="Zoom out" disabled>−</button>
+              <button type="button" id="timeline-zoom-fit" data-testid="timeline-zoom-fit" title="Zoom to fit">Fit</button>
+              <button type="button" id="timeline-zoom-in" data-testid="timeline-zoom-in" title="Zoom in">+</button>
+            </div>
+          </div>
+          <p class="tl-message" id="timeline-empty" data-testid="timeline-empty" hidden></p>
+          <p class="tl-error" id="timeline-error" data-testid="timeline-error" role="alert" hidden></p>
+          <div class="tl-scroll" id="timeline-scroll">
+            <div class="tl-content" id="timeline-content" data-testid="timeline-content">
+              <div class="tl-ruler" id="timeline-ruler" data-testid="timeline-ruler" title="Click to move the playhead">
+                <div class="tl-beats" id="timeline-beats" data-testid="timeline-beats"></div>
+              </div>
+              <div class="tl-target-marker" id="timeline-target-marker" hidden></div>
+              <div class="tl-track" id="timeline-track" data-testid="timeline-track"></div>
+              <div class="tl-playhead" id="timeline-playhead" data-testid="timeline-playhead" data-position="0"></div>
+            </div>
+          </div>
+        </div>
       </section>
     </div>
     <div class="toasts" id="toasts" data-testid="toasts" role="status" aria-live="polite"></div>

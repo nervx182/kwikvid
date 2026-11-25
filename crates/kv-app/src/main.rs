@@ -1,7 +1,9 @@
 //! kwikvid desktop app: a thin Tauri 2 shell over [`kv_session::Session`].
 //!
-//! The UI (plain HTML/CSS/ES modules in `ui/`, no bundler) calls four
-//! commands: `apply`, `undo`, `redo` and `get_state`. Each forwards to the
+//! The UI (plain HTML/CSS/ES modules in `ui/`, no bundler) calls five
+//! commands: `apply`, `undo`, `redo`, `get_state` and `reroll`, plus
+//! per-feature ones registered from their own module (the timeline's
+//! `get_beats` and `seek`). Each forwards to the
 //! session (see [`ipc`]); after every change the backend emits a `kv://state`
 //! event with the new snapshot. Errors come back as `{ "message": "..." }`.
 //! Project files (New, Open, Save, Save As, recent) are in [`project`]; the
@@ -10,39 +12,56 @@
 //! `--smoke` quits with code 0 after the first `kv://state` event (sent when
 //! the page has loaded), or with code 3 if none arrives in time. CI and
 //! headless checks use it to prove the app starts and exits cleanly.
+//!
+//! Preview (ADR 0007): the UI reports the viewer rectangle with
+//! `set_viewer_rect` and the backend chosen in [`preview::PreviewBackend`]
+//! draws there; on macOS that is the native Metal layer (`native_view`).
+//! `--preview-test-pattern` shows a moving test pattern through it.
 
 // Release builds on Windows are GUI apps without a console window.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod blit;
 mod ipc;
 mod menu;
+#[cfg(target_os = "macos")]
+mod native_view;
+mod preview;
 mod project;
+mod timeline;
 
 use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::Context as _;
 use ipc::{AppState, IpcError, STATE_EVENT};
-use kv_core::Command;
+use kv_core::{Command, SectionId};
+use kv_session::regen::RegenSnapshot;
 use kv_session::{Session, Snapshot};
+use preview::{PreviewBackend, PreviewState, ViewerRect};
 use project::ProjectFiles;
+use serde::Serialize;
 use tauri::webview::PageLoadEvent;
-use tauri::{AppHandle, Emitter, Listener, Manager, RunEvent, Runtime, State, WindowEvent};
+use tauri::{
+    AppHandle, Emitter, Listener, Manager, RunEvent, Runtime, State, WebviewWindow, WindowEvent,
+};
 
 /// How long `--smoke` waits for the first `kv://state` event.
 const SMOKE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Send the new state to every window after a successful change.
-fn emit_state<R: Runtime>(app: &AppHandle<R>, snapshot: &Snapshot) {
+/// `snapshot` is a [`Snapshot`] or a [`RegenSnapshot`] (the same keys plus
+/// `manual_edits_replaced` and `regen_error`).
+fn emit_state<R: Runtime, S: Serialize + Clone>(app: &AppHandle<R>, snapshot: &S) {
     if let Err(e) = app.emit(STATE_EVENT, snapshot) {
         tracing::warn!(error = %e, "could not emit {STATE_EVENT}");
     }
 }
 
-fn changed<R: Runtime>(
+fn changed<R: Runtime, S: Serialize + Clone>(
     app: &AppHandle<R>,
-    result: Result<Snapshot, IpcError>,
-) -> Result<Snapshot, IpcError> {
+    result: Result<S, IpcError>,
+) -> Result<S, IpcError> {
     if let Ok(snapshot) = &result {
         emit_state(app, snapshot);
     }
@@ -50,8 +69,21 @@ fn changed<R: Runtime>(
 }
 
 #[tauri::command]
-fn apply(app: AppHandle, state: State<'_, AppState>, cmd: Command) -> Result<Snapshot, IpcError> {
+fn apply(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    cmd: Command,
+) -> Result<RegenSnapshot, IpcError> {
     changed(&app, ipc::apply(&state, cmd))
+}
+
+#[tauri::command]
+fn reroll(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    section: SectionId,
+) -> Result<RegenSnapshot, IpcError> {
+    changed(&app, ipc::reroll(&state, section))
 }
 
 #[tauri::command]
@@ -69,19 +101,73 @@ fn get_state(state: State<'_, AppState>) -> Result<Snapshot, IpcError> {
     ipc::get_state(&state)
 }
 
+/// The viewer rectangle (CSS pixels relative to the webview, and the device
+/// pixel ratio), sent by `ui/js/viewer.js` on load, resize, layout change
+/// and fullscreen. Runs off the main thread: the native layer waits for it.
+#[tauri::command(async)]
+fn set_viewer_rect(
+    window: WebviewWindow,
+    preview: State<'_, PreviewState>,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    scale: f64,
+) -> Result<(), IpcError> {
+    let rect = ViewerRect { x, y, w, h, scale }
+        .validate()
+        .map_err(|message| IpcError { message })?;
+    // Only the native backend needs these.
+    let _ = (&window, rect);
+    match preview.backend() {
+        #[cfg(target_os = "macos")]
+        PreviewBackend::NativeMetal => {
+            let pattern = if preview.test_pattern() {
+                Some(
+                    ipc::get_state(&window.state::<AppState>())?
+                        .project
+                        .settings
+                        .aspect_ratio,
+                )
+            } else {
+                None
+            };
+            let native = window.state::<native_view::NativePreview>();
+            match native.view(&window, pattern) {
+                Ok(view) => {
+                    if let Err(e) = view.set_rect(rect) {
+                        tracing::warn!(error = %e, "could not resize the native preview layer");
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "native preview layer unavailable; viewer off");
+                    preview.set_backend(PreviewBackend::Off);
+                }
+            }
+        }
+        PreviewBackend::Off => {}
+    }
+    Ok(())
+}
+
 /// Command-line options. Unknown arguments are ignored (macOS may pass
 /// `-psn_...` when launched from Finder).
 #[derive(Debug, Default, PartialEq, Eq)]
 struct Options {
     smoke: bool,
+    /// `--preview-test-pattern`: show a moving pattern in the viewer through
+    /// the preview backend, for manual checks.
+    preview_test_pattern: bool,
 }
 
 impl Options {
     fn parse(args: impl IntoIterator<Item = String>) -> Options {
         let mut opts = Options::default();
         for a in args {
-            if a == "--smoke" {
-                opts.smoke = true;
+            match a.as_str() {
+                "--smoke" => opts.smoke = true,
+                "--preview-test-pattern" => opts.preview_test_pattern = true,
+                _ => {}
             }
         }
         opts
@@ -122,6 +208,10 @@ fn main() -> anyhow::Result<()> {
             project::choose_save_path,
             project::set_window_title,
             project::quit,
+            reroll,
+            set_viewer_rect,
+            timeline::get_beats,
+            timeline::seek,
         ])
         .setup(move |app| {
             let root = media_root(app.handle());
@@ -130,6 +220,14 @@ fn main() -> anyhow::Result<()> {
             let files = ProjectFiles::load(app.path().app_config_dir().ok());
             app.set_menu(menu::build(app.handle(), &files.recent())?)?;
             app.manage(files);
+            let backend = PreviewBackend::preferred();
+            tracing::info!(backend = backend.name(), "preview backend");
+            if opts.preview_test_pattern && backend == PreviewBackend::Off {
+                tracing::warn!("--preview-test-pattern: no preview backend on this platform yet");
+            }
+            app.manage(PreviewState::new(backend, opts.preview_test_pattern));
+            #[cfg(target_os = "macos")]
+            app.manage(native_view::NativePreview::default());
             if opts.smoke {
                 let handle = app.handle().clone();
                 app.listen_any(STATE_EVENT, move |_| {
@@ -205,6 +303,9 @@ mod tests {
         let args = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         assert!(!Options::parse(args(&[])).smoke);
         assert!(Options::parse(args(&["-psn_0_123", "--smoke"])).smoke);
+        let o = Options::parse(args(&["--preview-test-pattern"]));
+        assert!(o.preview_test_pattern && !o.smoke);
+        assert!(!Options::parse(args(&["--smoke"])).preview_test_pattern);
     }
 
     /// The window settings the native preview layer depends on (ADR 0007).

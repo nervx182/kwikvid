@@ -26,6 +26,12 @@ xvfb-run -a cargo run -p kv-app -- --smoke
 (after the page loads), or with code 3 if none arrives within 60 s.
 Log level: `RUST_LOG=debug cargo run -p kv-app`.
 
+`--preview-test-pattern` plays a moving test pattern (scrolling colour bars,
+a bouncing box, the frame number in binary along the bottom) in the viewer
+through the preview backend, for manual checks of the native layer on macOS:
+`cargo run -p kv-app -- --preview-test-pattern`. Other platforms log that
+there is no preview backend yet.
+
 ## Download a CI build (macOS, Apple Silicon)
 
 `.github/workflows/app-bundle.yml` builds an unsigned `kwikvid.app` on every
@@ -63,6 +69,10 @@ which). Signing, notarisation and a DMG are out of scope for now.
 | --- | --- |
 | `src/main.rs` | Tauri builder, the `apply` / `undo` / `redo` / `get_state` commands, `--smoke`. |
 | `src/ipc.rs` | The handlers as plain functions over the `Mutex<Session>` (unit-tested without a window). |
+| `src/preview.rs` | `PreviewBackend` (the one place the preview backend is chosen), viewer rect and letterbox math, test pattern. Portable. |
+| `src/blit.rs` | `SurfaceGpu` (a `GpuContext` that can present) and `Blitter` (draws the last frame letterboxed). Portable, tested headless. |
+| `src/native_view.rs` | macOS only: the `NSView` + `CAMetalLayer` under the webview, its wgpu surface (Fifo, one frame of latency) and the `FrameSink` (ADR 0007). |
+| `ui/js/viewer.js` | Sends the viewer rectangle (`set_viewer_rect`) on load, resize, layout change and fullscreen. |
 | `tauri.conf.json` | Window (transparent, for the native preview layer of ADR 0007), `macOSPrivateApi`, CSP. |
 | `capabilities/default.json` | Permissions of the main window (`core:default`). |
 | `ui/` | The frontend: plain HTML, CSS and ES modules, **no bundler, no npm**. Served as-is. |
@@ -76,6 +86,10 @@ which). Signing, notarisation and a DMG are out of scope for now.
 - `apply({ cmd })`: `cmd` is a `kv_core::Command` in its tagged JSON form,
   e.g. `{ "type": "set_seed", "section": 1, "seed": 7 }`.
 - `undo()`, `redo()`, `get_state()`.
+- `set_viewer_rect({ x, y, w, h, scale })`: the viewer rectangle in CSS
+  pixels relative to the page and `devicePixelRatio`; resolves to `null`.
+  The native layer covers it and letterboxes the preview to the project's
+  aspect ratio.
 - Every call resolves to a `kv_session::Snapshot` (snake_case keys:
   `revision`, `project`, `can_undo`, `can_redo`, `dirty`, `media_root`) or
   rejects with `{ "message": "..." }`, which the UI shows as a toast.

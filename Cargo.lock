@@ -2468,8 +2468,15 @@ name = "kv-app"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "kv-audio",
  "kv-core",
+ "kv-media",
+ "kv-render",
  "kv-session",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "pollster",
  "serde",
  "serde_json",
  "tauri",
@@ -2478,6 +2485,7 @@ dependencies = [
  "tempfile",
  "tracing",
  "tracing-subscriber",
+ "wgpu",
 ]
 
 [[package]]

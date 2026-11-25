@@ -17,9 +17,16 @@ const missingClips = [1, 2, 3].map((n) => ({
   resolved: CLIP(n),
 }));
 
-/** Names of the commands the UI sent, in order, ignoring rendering calls. */
+/** Names of the commands the UI sent, in order, ignoring rendering and
+ * background calls (state, title, beats, viewer rect). */
 async function flow(mock) {
-  const quiet = new Set(["get_state", "project_info", "set_window_title"]);
+  const quiet = new Set([
+    "get_state",
+    "project_info",
+    "set_window_title",
+    "get_beats",
+    "set_viewer_rect",
+  ]);
   return (await mock.commands()).map((c) => c.command).filter((c) => !quiet.has(c));
 }
 
