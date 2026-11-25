@@ -11,7 +11,8 @@
 //! [`Session::open`], [`RecentProjects`]), and in background jobs
 //! ([`JobRunner`]) through injected backends and `kv-cache`.
 //! Regenerate/re-roll lives in [`regen`], import and library thumbnails in
-//! [`import`]; a later module adds export.
+//! [`import`], beat nudges of cuts ([`Session::nudge_cut`]) in `tweaks`; a
+//! later module adds export.
 //!
 //! # Paths
 //!
@@ -41,6 +42,7 @@ mod jobs;
 mod paths;
 mod project_file;
 pub mod regen;
+mod tweaks;
 
 pub use analysis::{AudioAnalyzer, MusicAnalyzer};
 pub use error::SessionError;

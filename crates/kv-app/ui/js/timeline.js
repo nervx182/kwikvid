@@ -1,7 +1,8 @@
 // Timeline: the current section's edit as proportional blocks over the
-// music's beat grid, with a playhead. Read-only for now; manual tweaks
-// extend this module later. The transport (transport.js) moves the playhead
-// and owns the ruler's scrubbing.
+// music's beat grid, with a playhead. Manual tweaks (tweaks.js: drag to
+// reorder, cut nudges, clip audio) decorate the drawn blocks through
+// onTimelineDraw. The transport (transport.js) moves the playhead and owns
+// the ruler's scrubbing.
 //
 // Rendering is plain DOM (absolutely positioned blocks, positions in percent
 // of the content width): 200 segments plus a few hundred beat ticks is a
@@ -25,6 +26,17 @@ const state = {
 };
 
 const $ = (id) => document.getElementById(id);
+
+/** Callbacks run after every draw (see onTimelineDraw). */
+const drawHooks = [];
+
+/**
+ * Call cb({ snapshot, section, span }) after every redraw, once the segment
+ * blocks (.tl-seg, data-index) are in #timeline-track.
+ */
+export function onTimelineDraw(cb) {
+  drawHooks.push(cb);
+}
 
 /** URL of filmstrip cell `index` of a media item (served by the backend). */
 export function thumbUrl(mediaId, index) {
@@ -244,4 +256,5 @@ function draw() {
   $("timeline-track").replaceChildren(...blocks);
 
   setPlayhead(state.position);
+  for (const cb of drawHooks) cb({ snapshot, section: sec, span });
 }

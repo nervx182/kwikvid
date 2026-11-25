@@ -6,6 +6,7 @@ import { showToast } from "./toast.js";
 import { initToolbar, renderToolbar } from "./toolbar.js";
 import { initProject, renderProject } from "./project.js";
 import { initTimeline, renderTimeline } from "./timeline.js";
+import { initTweaks } from "./tweaks.js";
 import { initAutoEdit, renderAutoEdit } from "./autoedit.js";
 import { initViewer } from "./viewer.js";
 import { initLibrary, renderLibrary } from "./library.js";
@@ -64,6 +65,7 @@ async function run(promise) {
 initToolbar(run);
 initProject(render);
 initTimeline(run);
+initTweaks(run);
 initTransport(run);
 initAutoEdit(run, render);
 initLibrary(run);
