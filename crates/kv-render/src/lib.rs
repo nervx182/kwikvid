@@ -3,9 +3,13 @@
 //! - The frame plan: the pure mapping from an edit decision list ([`Edl`])
 //!   to output frames, each listing the source frames visible in it and
 //!   their blend weights ([`plan`], [`FramePlan`]). Slow motion blends the
-//!   two source frames around the exact source time (ADR 0005).
+//!   two source frames around the exact source time (ADR 0005). Overlays
+//!   (the title card, [`FramePlan::with_title`]) sit on top with an opacity.
+//! - The title card: text rasterised to a transparent RGBA layer
+//!   ([`title::rasterize`]).
 //! - The CPU export compositor (ADR 0009): turns a frame's decoded layers
-//!   into output pixels ([`composite`], [`Fit`], [`source_size_for`]).
+//!   into output pixels ([`composite`], [`Fit`], [`source_size_for`]), then
+//!   alpha-blends overlays on top ([`overlay()`]).
 //! - The export pipeline: a project section to an MP4 ([`export()`]).
 //! - The GPU preview compositor (ADR 0007), the same compositing on wgpu
 //!   ([`gpu::GpuCompositor`], feature `gpu`, on by default).
@@ -17,11 +21,12 @@ mod export;
 #[cfg(feature = "gpu")]
 pub mod gpu;
 pub mod preview;
+pub mod title;
 
-pub use composite::{composite, source_size_for, CompositeError, Fit};
+pub use composite::{composite, overlay, source_size_for, CompositeError, Fit};
 pub use export::{export, ExportReport, Progress, RenderError, MAX_OPEN_READERS, MUSIC_FADE_OUT};
 
-use kv_core::{Edl, MediaId, Micros, Segment, Speed, Transition};
+use kv_core::{Edl, MediaId, Micros, Segment, Speed, TitleCard, Transition};
 use kv_media::Rational;
 
 /// Errors from building a frame plan.
@@ -47,6 +52,28 @@ pub struct Layer {
     pub weight: f32,
 }
 
+/// Which overlay image an [`Overlay`] shows. The renderer owns the images
+/// (rasterised once per export or preview), the plan only says when and how
+/// strongly each one is visible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OverlayId {
+    /// The section's title card ([`title::rasterize`]).
+    Title,
+}
+
+/// An image alpha-blended over an output frame after its source layers
+/// ([`overlay()`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Overlay {
+    pub id: OverlayId,
+    /// Multiplies the image's own alpha, in `[0, 1]`.
+    pub opacity: f32,
+}
+
+/// Fade-in and fade-out length of the title card (guess: 300 ms each). A
+/// title shorter than two fades fades over half its length each way.
+pub const TITLE_FADE: Micros = Micros(300_000);
+
 /// One output frame and the source layers composited into it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OutputFrame {
@@ -58,6 +85,8 @@ pub struct OutputFrame {
     /// source frames around the exact source time in slow motion
     /// (`speed < 100`), earlier frame first. Empty means a gap: draw black.
     pub layers: Vec<Layer>,
+    /// Drawn over the composited layers, in order.
+    pub overlays: Vec<Overlay>,
 }
 
 /// The frame rate of each source media item, for [`plan`]: `None` (or an
@@ -73,6 +102,8 @@ pub struct FramePlan<'a> {
     fps: Rational,
     source_fps: SourceFps<'a>,
     len: u64,
+    /// Title card duration, if the section has one.
+    title: Option<Micros>,
 }
 
 impl std::fmt::Debug for FramePlan<'_> {
@@ -81,6 +112,7 @@ impl std::fmt::Debug for FramePlan<'_> {
             .field("edl", self.edl)
             .field("fps", &self.fps)
             .field("len", &self.len)
+            .field("title", &self.title)
             .finish_non_exhaustive()
     }
 }
@@ -117,10 +149,22 @@ pub fn plan<'a>(
         fps,
         source_fps,
         len,
+        title: None,
     })
 }
 
 impl<'a> FramePlan<'a> {
+    /// Show `title` (a section's [`TitleCard`]) over the opening frames: an
+    /// [`OverlayId::Title`] overlay on every frame with pts in
+    /// `[0, title.duration)`, its opacity rising linearly from 0 at pts 0 to
+    /// 1 after [`TITLE_FADE`] and falling back towards 0 over the last
+    /// [`TITLE_FADE`] (see [`title_opacity`]). `None` shows no title. The
+    /// plan's length is unchanged: a title longer than the edit is cut short.
+    pub fn with_title(mut self, title: Option<&TitleCard>) -> Self {
+        self.title = title.map(|t| t.duration);
+        self
+    }
+
     /// Number of output frames.
     pub fn len(&self) -> u64 {
         self.len
@@ -146,6 +190,15 @@ impl<'a> FramePlan<'a> {
             index,
             pts: Micros(pts),
             layers: layers_at(self.edl, pts, self.source_fps),
+            overlays: self
+                .title
+                .and_then(|d| title_opacity(d, Micros(pts)))
+                .map(|opacity| Overlay {
+                    id: OverlayId::Title,
+                    opacity,
+                })
+                .into_iter()
+                .collect(),
         })
     }
 
@@ -153,6 +206,21 @@ impl<'a> FramePlan<'a> {
     pub fn iter(&self) -> impl Iterator<Item = OutputFrame> + '_ {
         (0..self.len).filter_map(move |k| self.frame(k))
     }
+}
+
+/// Opacity of a title card lasting `duration` at time `pts`, or `None`
+/// outside `[0, duration)`: `min(1, pts / fade, (duration - pts) / fade)`
+/// with `fade = min(TITLE_FADE, duration / 2)`. So it is 0 at pts 0, 1 on
+/// the plateau, and reaches 0 exactly at `duration` (the last frame shown
+/// has a small positive opacity).
+pub fn title_opacity(duration: Micros, pts: Micros) -> Option<f32> {
+    if pts.0 < 0 || pts.0 >= duration.0 {
+        return None;
+    }
+    let fade = TITLE_FADE.0.min(duration.0 / 2).max(1) as f64;
+    let rise = pts.0 as f64 / fade;
+    let fall = (duration.0 - pts.0) as f64 / fade;
+    Some(rise.min(fall).min(1.0) as f32)
 }
 
 /// `round(k * 1e6 * den / num)`, exact, for positive `num` and `den`.
@@ -359,6 +427,62 @@ mod tests {
         }
         let sum: f32 = f.layers.iter().map(|l| l.weight).sum();
         assert!((sum - 1.0).abs() < 1e-6, "frame {}: sum {sum}", f.index);
+    }
+
+    #[test]
+    fn title_overlay_only_in_range_with_fades() {
+        // 3 s edit at 10 fps; a 2 s title: frames 0..20.
+        let e = edl(vec![seg(1, 0, 3_000_000, Transition::Cut, 100)]);
+        let card = TitleCard {
+            text: "Hi".into(),
+            duration: Micros(2_000_000),
+        };
+        let p = plan(&e, Rational::new(10, 1), &no_fps)
+            .unwrap()
+            .with_title(Some(&card));
+        assert_eq!(p.len(), 30);
+        for f in p.iter() {
+            let want = match f.index {
+                // Fade in over 300 ms: 0, 1/3, 2/3.
+                k @ 0..=2 => Some(k as f32 / 3.0),
+                3..=17 => Some(1.0),
+                // Fade out: (2 s - pts) / 300 ms = 2/3, 1/3.
+                k @ 18..=19 => Some((20 - k) as f32 / 3.0),
+                _ => None,
+            };
+            match (want, f.overlays.as_slice()) {
+                (None, []) => {}
+                (Some(w), [o]) => {
+                    assert_eq!(o.id, OverlayId::Title);
+                    assert!((o.opacity - w).abs() < 1e-5, "frame {}: {o:?}", f.index);
+                }
+                (w, got) => panic!("frame {}: want {w:?}, got {got:?}", f.index),
+            }
+            // Layers are unaffected by the title.
+            assert_eq!(f.layers.len(), 1);
+        }
+        // No title, or `None`: no overlays anywhere.
+        let plain = plan(&e, Rational::new(10, 1), &no_fps).unwrap();
+        assert!(plain.iter().all(|f| f.overlays.is_empty()));
+        let none = plain.clone().with_title(None);
+        assert!(none.iter().all(|f| f.overlays.is_empty()));
+    }
+
+    #[test]
+    fn title_opacity_shapes() {
+        let d = Micros(2_000_000);
+        assert_eq!(title_opacity(d, Micros(-1)), None);
+        assert_eq!(title_opacity(d, Micros(0)), Some(0.0));
+        assert_eq!(title_opacity(d, Micros(150_000)), Some(0.5));
+        assert_eq!(title_opacity(d, Micros(300_000)), Some(1.0));
+        assert_eq!(title_opacity(d, Micros(1_700_000)), Some(1.0));
+        assert_eq!(title_opacity(d, Micros(1_850_000)), Some(0.5));
+        assert_eq!(title_opacity(d, d), None);
+        // Shorter than two fades: a triangle peaking at the middle.
+        let short = Micros(500_000);
+        assert_eq!(title_opacity(short, Micros(250_000)), Some(1.0));
+        assert_eq!(title_opacity(short, Micros(125_000)), Some(0.5));
+        assert_eq!(title_opacity(short, Micros(375_000)), Some(0.5));
     }
 
     #[test]
