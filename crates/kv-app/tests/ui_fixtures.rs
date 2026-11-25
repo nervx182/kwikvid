@@ -291,6 +291,74 @@ fn library_session() -> Session {
     s
 }
 
+fn range(media: u64, start_ms: i64, end_ms: i64) -> RangeRef {
+    RangeRef {
+        media_id: MediaId(media),
+        start: ms(start_ms),
+        end: ms(end_ms),
+    }
+}
+
+/// The clip inspector fixtures (`ui/js/inspector.js`), all on top of the
+/// library fixture:
+///
+/// - `inspector-pinned`: clip 1's 10-15 s pinned.
+/// - `inspector-constraints`: that pin, clip 1's 40-50 s excluded and the
+///   whole of clip 2 (0-10 s) excluded.
+/// - `inspector-pins-too-long`: the 40 s song analysed and a 15 s target,
+///   then clip 1's 0-20 s pinned through `apply`: the pin applies but the
+///   edit cannot be rebuilt (`regen_error`).
+fn inspector_fixtures() -> Vec<(&'static str, String)> {
+    let mut s = library_session();
+    let pinned = s
+        .apply(Command::PinRange {
+            section: S,
+            range: range(1, 10_000, 15_000),
+        })
+        .expect("pin");
+    s.apply(Command::ExcludeRange {
+        section: S,
+        range: range(1, 40_000, 50_000),
+    })
+    .expect("exclude range");
+    let constraints = s
+        .apply(Command::ExcludeRange {
+            section: S,
+            range: range(2, 0, 10_000),
+        })
+        .expect("exclude clip");
+
+    let (music, analysis) = long_song();
+    let mut s = library_session();
+    s.apply(Command::SetMusic {
+        section: S,
+        music: Some(music.clone()),
+    })
+    .expect("music");
+    s.set_music_analysis(music.path.clone(), analysis);
+    s.apply(fixed(15)).expect("target");
+    let source = s.analyses();
+    let too_long = s
+        .apply_and_regenerate(
+            Command::PinRange {
+                section: S,
+                range: range(1, 0, 20_000),
+            },
+            &source,
+        )
+        .expect("pin");
+    assert_eq!(
+        too_long.regen_error.as_deref(),
+        Some("A pinned moment is longer than the target length.")
+    );
+
+    vec![
+        ("inspector-pinned", render(&pinned)),
+        ("inspector-constraints", render(&constraints)),
+        ("inspector-pins-too-long", render(&too_long)),
+    ]
+}
+
 /// The answer of `import` for the library fixture, with one skipped photo.
 fn import_report() -> ImportReport {
     ImportReport {
@@ -428,6 +496,7 @@ fn all_fixtures() -> Vec<(&'static str, String)> {
         .collect();
     all.extend(other_fixtures());
     all.extend(autoedit_fixtures());
+    all.extend(inspector_fixtures());
     all
 }
 
