@@ -54,7 +54,7 @@ class Mock {
 
   /**
    * The calls the UI made, in order, as { command, args? }; command is
-   * "apply", "undo", "redo", "get_state", "get_beats" or "seek". Pass a
+   * "apply", "undo", "redo", "get_state", "reroll", "get_beats" or "seek". Pass a
    * name to filter.
    */
   async commands(name) {
@@ -67,16 +67,24 @@ class Mock {
     await this.page.evaluate((b) => (window.__kvMock.beats = b), beats);
   }
 
-  /** The next `command` call resolves to `snapshot` (it becomes the state). */
-  async respond(command, snapshot) {
-    await this.page.evaluate((r) => window.__kvMock.responses.push(r), { command, snapshot });
+  /**
+   * The next `command` call resolves to `snapshot` (it becomes the state).
+   * `delayMs`: answer that much later (e.g. to see a busy indicator).
+   */
+  async respond(command, snapshot, { delayMs = 0 } = {}) {
+    await this.page.evaluate((r) => window.__kvMock.responses.push(r), {
+      command,
+      snapshot,
+      delayMs,
+    });
   }
 
   /** The next `command` call rejects with { message }. */
-  async fail(command, message) {
+  async fail(command, message, { delayMs = 0 } = {}) {
     await this.page.evaluate((r) => window.__kvMock.responses.push(r), {
       command,
       error: message,
+      delayMs,
     });
   }
 }
