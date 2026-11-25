@@ -94,6 +94,12 @@ export function seek(position) {
   return query("seek", { position }, Math.max(0, position));
 }
 
+// The viewer rectangle for the native preview layer; resolves to null like
+// the real command.
+export function setViewerRect(rect) {
+  return query("set_viewer_rect", rect, null);
+}
+
 export function onState(cb) {
   mock.listeners.add(cb);
   return Promise.resolve(() => mock.listeners.delete(cb));

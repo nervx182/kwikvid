@@ -6,6 +6,7 @@ import { showToast } from "./toast.js";
 import { initToolbar, renderToolbar } from "./toolbar.js";
 import { initTimeline, renderTimeline } from "./timeline.js";
 import { initAutoEdit, renderAutoEdit } from "./autoedit.js";
+import { initViewer } from "./viewer.js";
 
 let current = null;
 
@@ -55,6 +56,7 @@ async function run(promise) {
 initToolbar(run);
 initTimeline(run);
 initAutoEdit(run, render);
+initViewer(document.querySelector('[data-testid="viewer"]'), api.setViewerRect);
 api.onState(render);
 run(api.getState());
 

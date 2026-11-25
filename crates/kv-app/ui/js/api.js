@@ -63,6 +63,14 @@ export function getState() {
 }
 
 /**
+ * Report the viewer rectangle so the native preview layer can cover it:
+ * { x, y, w, h } in CSS pixels relative to the page, scale = devicePixelRatio.
+ */
+export function setViewerRect(rect) {
+  return call("set_viewer_rect", rect);
+}
+
+/**
  * Call cb(snapshot) for every state the backend emits. Resolves to a function
  * that stops listening.
  */
