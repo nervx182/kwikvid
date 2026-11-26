@@ -25,6 +25,11 @@
 //!   960x540, the proxy size that held 57-60 fps in the ADR 0007 spike.
 //!   Sources are decoded straight at [`source_size_for`] that size.
 //!
+//! - **Title card.** The section's title is drawn over the opening frames
+//!   with the same fades as export ([`crate::FramePlan::with_title`]). It
+//!   is rasterised at the preview size and handed to the compositor
+//!   ([`PreviewCompositor::set_overlay`]) only when its text changes.
+//!
 //! - **Audio.** With [`PreviewConfig::audio`] the engine renders the
 //!   section's music bed for the transport, keeps it in step on play,
 //!   pause, seek and edit, and takes its time from the transport's
@@ -45,14 +50,15 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use kv_audio::{render_music_bed, MusicBedOptions, PcmAudio};
-use kv_core::{Edl, MediaId, Micros, MusicRef, Project, SectionId};
+use kv_core::{Edl, MediaId, Micros, MusicRef, Project, SectionId, TitleCard};
 use kv_media::{DecodeOptions, MediaBackend, Rational, VideoFrame, VideoReader};
 
 pub use audio::{AudioClock, AudioOutput, AudioTransport, NullOutput};
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use output::{CpuCompositor, FrameSink, PreviewCompositor, RenderedFrame};
 
-use crate::{frame_pts, plan, source_size_for, CompositeError, Fit, PlanError, MUSIC_FADE_OUT};
+use crate::{frame_pts, plan, source_size_for, title, CompositeError, Fit, PlanError};
+use crate::{Overlay, OverlayId, MUSIC_FADE_OUT};
 
 /// The proxy size the preview falls back to when the output is larger than
 /// the viewer (ADR 0007: 960x540 held 57-60 fps on the CI Mac).
@@ -190,6 +196,7 @@ struct Job {
 
 struct Edit {
     edl: Edl,
+    title: Option<TitleCard>,
     sources: HashMap<MediaId, PathBuf>,
     len: u64,
     end: Micros,
@@ -278,6 +285,8 @@ pub struct PreviewEngine {
     tick_lock: Mutex<()>,
     /// Last rendered bed: (music path, length) and the PCM.
     bed: Mutex<Option<(PathBuf, Micros, Arc<PcmAudio>)>>,
+    /// Text of the title image the compositor holds, if any.
+    title_text: Mutex<Option<String>>,
     workers: Vec<JoinHandle<()>>,
 }
 
@@ -341,6 +350,7 @@ impl PreviewEngine {
             on_position: Mutex::new(None),
             tick_lock: Mutex::new(()),
             bed: Mutex::new(None),
+            title_text: Mutex::new(None),
             workers,
         })
     }
@@ -376,6 +386,7 @@ impl PreviewEngine {
                 None => tracing::warn!(media_id = seg.media_id.0, "preview: media not in project"),
             }
         }
+        self.update_title(sec.title.as_ref())?;
         if let Some(audio) = &self.config.audio {
             self.update_bed(audio, project, sec.music.as_ref(), end);
         }
@@ -390,6 +401,7 @@ impl PreviewEngine {
             st.readers.retain(|path, _| wanted.contains(path));
             st.edit = Some(Edit {
                 edl,
+                title: sec.title.clone(),
                 sources,
                 len,
                 end,
@@ -510,7 +522,7 @@ impl PreviewEngine {
         let _one_at_a_time = lock(&self.tick_lock);
         let deadline = Instant::now() + self.config.max_wait;
         let mut st = self.shared.lock();
-        let (index, pts, frames) = loop {
+        let (index, pts, (frames, overlays)) = loop {
             let now = self.config.clock.now();
             let Some(edit) = &st.edit else {
                 return Ok(Tick::Idle);
@@ -552,7 +564,7 @@ impl PreviewEngine {
             frames.iter().map(|(f, w)| (f.as_ref(), *w)).collect();
         let rendered = {
             let mut compositor = lock(&self.compositor);
-            match compositor.render(pts, &layers, self.config.fit) {
+            match compositor.render_with_overlays(pts, &layers, &overlays, self.config.fit) {
                 Ok(frame) => {
                     lock(&self.sink).present(&frame);
                     Ok(())
@@ -587,6 +599,20 @@ impl PreviewEngine {
         rendered?;
         self.report_position(pos);
         Ok(Tick::Presented(index))
+    }
+
+    /// Rasterise `title` at the preview size and give it to the compositor,
+    /// or clear it, unless the compositor already holds that text.
+    fn update_title(&self, title: Option<&TitleCard>) -> Result<(), PreviewError> {
+        let text = title.map(|t| t.text.as_str());
+        let mut held = lock(&self.title_text);
+        if held.as_deref() == text {
+            return Ok(());
+        }
+        let image = title.map(|t| title::rasterize(t, self.size.0, self.size.1));
+        lock(&self.compositor).set_overlay(OverlayId::Title, image.as_ref())?;
+        *held = text.map(str::to_owned);
+        Ok(())
     }
 
     /// Point the audio transport at the playhead: bed frame `st.pos` is
@@ -701,11 +727,18 @@ impl Drop for PreviewEngine {
     }
 }
 
-/// The decoded layers of frame `k` with their weights, or `None` while any
-/// is still pending. Failed layers are left out (drawn black).
-fn ready_layers(st: &State, fps: Rational, k: u64) -> Option<Vec<(Arc<VideoFrame>, f32)>> {
+/// A frame ready to draw: decoded layers (frame, weight) and overlays.
+type ReadyFrame = (Vec<(Arc<VideoFrame>, f32)>, Vec<Overlay>);
+
+/// The decoded layers of frame `k` with their weights and its overlays, or
+/// `None` while any layer is still pending. Failed layers are left out
+/// (drawn black).
+fn ready_layers(st: &State, fps: Rational, k: u64) -> Option<ReadyFrame> {
     let edit = st.edit.as_ref()?;
-    let frame = plan(&edit.edl, fps, &no_source_fps).ok()?.frame(k)?;
+    let frame = plan(&edit.edl, fps, &no_source_fps)
+        .ok()?
+        .with_title(edit.title.as_ref())
+        .frame(k)?;
     let mut out = Vec::with_capacity(frame.layers.len());
     for l in frame.layers {
         match st.cache.get(&(l.media_id, l.src_time)) {
@@ -714,7 +747,7 @@ fn ready_layers(st: &State, fps: Rational, k: u64) -> Option<Vec<(Arc<VideoFrame
             Some(Slot::Pending) | None => return None,
         }
     }
-    Some(out)
+    Some((out, frame.overlays))
 }
 
 /// Source frame rates for the plan: not known here (sources are probed

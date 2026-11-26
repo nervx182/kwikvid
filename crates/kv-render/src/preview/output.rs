@@ -1,11 +1,13 @@
 //! Where preview frames go: the compositor that draws them and the sink
 //! that shows them.
 
+use std::collections::HashMap;
+
 use kv_core::Micros;
 use kv_media::VideoFrame;
 
 use super::PreviewError;
-use crate::{composite, Fit};
+use crate::{composite, overlay, Fit, Overlay, OverlayId};
 
 /// A composited preview frame, valid for the duration of
 /// [`FrameSink::present`].
@@ -58,11 +60,34 @@ pub trait PreviewCompositor: Send {
     /// Output size in pixels; the engine decodes sources for this size.
     fn size(&self) -> (u32, u32);
 
+    /// Set (`Some`) or clear (`None`) the image drawn for overlay `id`: a
+    /// straight-alpha frame of exactly [`size`](Self::size). The engine
+    /// calls it only when the image changes (a new title text), so a GPU
+    /// compositor uploads it once and reuses it for every frame.
+    fn set_overlay(
+        &mut self,
+        id: OverlayId,
+        image: Option<&VideoFrame>,
+    ) -> Result<(), PreviewError>;
+
     /// Composite `layers` (frame, weight) with `fit` into a frame at `pts`.
     fn render(
         &mut self,
         pts: Micros,
         layers: &[(&VideoFrame, f32)],
+        fit: Fit,
+    ) -> Result<RenderedFrame<'_>, PreviewError> {
+        self.render_with_overlays(pts, layers, &[], fit)
+    }
+
+    /// Like [`render`](Self::render), then alpha-blend `overlays` on top in
+    /// order, like export ([`crate::overlay()`]). An overlay whose image is
+    /// not set is skipped.
+    fn render_with_overlays(
+        &mut self,
+        pts: Micros,
+        layers: &[(&VideoFrame, f32)],
+        overlays: &[Overlay],
         fit: Fit,
     ) -> Result<RenderedFrame<'_>, PreviewError>;
 }
@@ -72,6 +97,7 @@ pub trait PreviewCompositor: Send {
 #[derive(Debug, Clone)]
 pub struct CpuCompositor {
     out: VideoFrame,
+    overlays: HashMap<OverlayId, VideoFrame>,
 }
 
 impl CpuCompositor {
@@ -82,6 +108,7 @@ impl CpuCompositor {
         }
         Ok(CpuCompositor {
             out: VideoFrame::solid(Micros(0), width, height, [0, 0, 0, 255]),
+            overlays: HashMap::new(),
         })
     }
 }
@@ -91,13 +118,31 @@ impl PreviewCompositor for CpuCompositor {
         (self.out.width, self.out.height)
     }
 
-    fn render(
+    fn set_overlay(
+        &mut self,
+        id: OverlayId,
+        image: Option<&VideoFrame>,
+    ) -> Result<(), PreviewError> {
+        match image {
+            Some(image) => self.overlays.insert(id, image.clone()),
+            None => self.overlays.remove(&id),
+        };
+        Ok(())
+    }
+
+    fn render_with_overlays(
         &mut self,
         pts: Micros,
         layers: &[(&VideoFrame, f32)],
+        overlays: &[Overlay],
         fit: Fit,
     ) -> Result<RenderedFrame<'_>, PreviewError> {
         composite(layers, &mut self.out, fit)?;
+        for o in overlays {
+            if let Some(image) = self.overlays.get(&o.id) {
+                overlay(&mut self.out, image, o.opacity)?;
+            }
+        }
         self.out.pts = pts;
         Ok(RenderedFrame::Cpu(&self.out))
     }
@@ -109,10 +154,26 @@ impl PreviewCompositor for crate::gpu::GpuCompositor {
         (self.width(), self.height())
     }
 
-    fn render(
+    fn set_overlay(
+        &mut self,
+        id: OverlayId,
+        image: Option<&VideoFrame>,
+    ) -> Result<(), PreviewError> {
+        if let Some(old) = self.preview_overlays.remove(&id) {
+            self.release(old)?;
+        }
+        if let Some(image) = image {
+            let tex = self.upload(image)?;
+            self.preview_overlays.insert(id, tex);
+        }
+        Ok(())
+    }
+
+    fn render_with_overlays(
         &mut self,
         pts: Micros,
         layers: &[(&VideoFrame, f32)],
+        overlays: &[Overlay],
         fit: Fit,
     ) -> Result<RenderedFrame<'_>, PreviewError> {
         let mut ids = Vec::with_capacity(layers.len());
@@ -127,8 +188,12 @@ impl PreviewCompositor for crate::gpu::GpuCompositor {
             }
         }
         if result.is_ok() {
+            let over: Vec<_> = overlays
+                .iter()
+                .filter_map(|o| Some((*self.preview_overlays.get(&o.id)?, o.opacity)))
+                .collect();
             // The inherent method: draw the uploaded textures.
-            result = crate::gpu::GpuCompositor::render(self, &ids, fit);
+            result = crate::gpu::GpuCompositor::render_with_overlays(self, &ids, &over, fit);
         }
         for (id, _) in ids {
             // Returned to the pool for the next frame; the id is ours.
