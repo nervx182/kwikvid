@@ -358,7 +358,10 @@ fn main() -> anyhow::Result<()> {
         .setup(move |app| {
             let root = media_root(app.handle());
             tracing::info!(media_root = %root.display(), "new session");
-            app.manage(AppState::new(Session::new(root)));
+            app.manage(
+                AppState::new(Session::new(root))
+                    .with_bundled_music(music::resource_dir(app.handle())),
+            );
             // Before the library's job event thread starts, which reads it.
             app.manage(music::MusicPicks::default());
             app.manage(library::Library::start(app.handle()));

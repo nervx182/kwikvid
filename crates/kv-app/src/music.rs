@@ -8,7 +8,9 @@
 //! - `pick_music()` opens the native picker filtered to
 //!   [`MUSIC_EXTENSIONS`] and returns the absolute path, or `null`.
 //! - `analyze_music(section, path)` checks the file can be referenced from
-//!   the project, submits [`Job::AnalyzeMusic`] and returns its queued
+//!   the project (a bundled track always can: on another drive it is
+//!   copied into the project folder on save, see
+//!   [`Session::music_project_path`]), submits [`Job::AnalyzeMusic`] and returns its queued
 //!   [`JobUpdate`]. When that job is `"done"` the job event thread applies
 //!   `Command::SetMusic` (project path, analysed duration) through
 //!   [`Session::apply_and_regenerate`] and emits `kv://state` before the
@@ -160,7 +162,7 @@ pub fn start(
             message: format!("\"{name}\" is not a supported song. Use MP3, AAC, WAV or FLAC."),
         });
     }
-    session.to_project_path(path).map_err(|e| IpcError {
+    session.check_music_path(path).map_err(|e| IpcError {
         message: format!("\"{name}\" can't be used as music here: {e}"),
     })?;
     let update = submit(Job::AnalyzeMusic(path.to_path_buf()))?;
@@ -201,7 +203,7 @@ pub fn finish(
     };
     let mut set = || -> Result<RegenSnapshot, IpcError> {
         let music = MusicRef {
-            path: session.to_project_path(path)?,
+            path: session.music_project_path(path)?,
             duration: analysis.duration,
         };
         let analyses = session.analyses();
@@ -238,14 +240,17 @@ pub fn on_job_message<R: Runtime>(
     }
 }
 
+/// The app's bundled music folder, if the platform has a resource folder.
+pub fn resource_dir<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
+    app.path()
+        .resolve(RESOURCE_DIR, BaseDirectory::Resource)
+        .ok()
+}
+
 /// The bundled tracks shipped with the app (possibly none).
 #[tauri::command]
 pub fn bundled_tracks(app: AppHandle) -> Vec<BundledTrack> {
-    let dir = app
-        .path()
-        .resolve(RESOURCE_DIR, BaseDirectory::Resource)
-        .ok();
-    bundled_in(dir.as_deref())
+    bundled_in(resource_dir(&app).as_deref())
 }
 
 /// Let the user pick one song; `None` when the picker is cancelled.
@@ -495,6 +500,35 @@ source_url = "https://example.com"
             "../../Applications/kwikvid.app/Contents/Resources/music/arpent.mp3"
         );
         assert_eq!(s.resolve(&music.path), PathBuf::from(path));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn bundled_track_on_another_drive_is_accepted() {
+        let mut s = Session::new(PathBuf::from(r"D:\trips\p"));
+        s.set_bundled_music_dir(Some(PathBuf::from(r"C:\Program Files\kwikvid\music")));
+        let picks = MusicPicks::default();
+        let path = r"C:\Program Files\kwikvid\music\arpent.mp3";
+        start(&s, &picks, S, Path::new(path), queued(1)).unwrap();
+        let r = deliver(&mut s, &picks, &done(1, path)).unwrap().unwrap();
+        let music = r.snapshot.project.sections[0].music.clone().unwrap();
+        // The path its copy gets on save; until then it resolves in place.
+        assert_eq!(music.path, "music/arpent.mp3");
+        assert_eq!(s.resolve(&music.path), PathBuf::from(path));
+        assert!(s.music_analysis(&music).is_some());
+        // Not bundled: still refused.
+        let other = Path::new(r"C:\Users\ana\song.mp3");
+        assert!(start(&s, &picks, S, other, queued(2)).is_err());
+    }
+
+    #[test]
+    fn app_state_gives_every_session_the_bundled_folder() {
+        let dir = PathBuf::from("/opt/kwikvid/music");
+        let state = AppState::new(session()).with_bundled_music(Some(dir.clone()));
+        assert_eq!(state.session().unwrap().bundled_music_dir(), Some(&*dir));
+        // A replacement session (New, Open) gets it on the next lock.
+        *state.session().unwrap() = session();
+        assert_eq!(state.session().unwrap().bundled_music_dir(), Some(&*dir));
     }
 
     #[test]

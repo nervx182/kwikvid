@@ -197,7 +197,7 @@ pub(crate) fn to_project_path_native(root: &Path, path: &Path) -> Result<String,
     }
 }
 
-fn utf8(path: &Path) -> Result<&str, SessionError> {
+pub(crate) fn utf8(path: &Path) -> Result<&str, SessionError> {
     path.to_str()
         .ok_or_else(|| SessionError::NonUtf8Path(path.to_owned()))
 }

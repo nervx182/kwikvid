@@ -1,6 +1,8 @@
 # 0013 Bundled music: referenced in place from the app resources
 
-Status: accepted (2026-11-25), reversible
+Status: amended (2026-11-26, #130): bundled music is now copied into the
+project folder on save; see "Amendment" below. Originally accepted
+2026-11-25.
 
 ## Context
 
@@ -40,3 +42,29 @@ kind, no copy step, no change to the project file format.
   resolved path is under the resource folder into the project folder and
   rewrite its `MusicRef.path`; projects written under this decision keep
   working, since their paths are still valid relative paths.
+
+## Amendment (2026-11-26, #130): copy on save
+
+Option 1 now applies on top of option 2, as the reversal above described.
+Saving a project (`Session::save_as` and `Session::save`) copies every file
+under the bundled music folder that the project's history refers to into
+`music/<file name>` in the project folder and rewrites its `MusicRef.path`
+(in every undo and redo state too). The copies are made before the project
+file is written and removed again if writing it fails. A file of that name
+with the same bytes is reused; one with other bytes is kept and the copy
+gets a numbered name (`arpent-2.mp3`). After the first save the path points
+inside the project folder, so a second save copies nothing. The app passes
+the folder in with `Session::set_bundled_music_dir` (via
+`AppState::with_bundled_music`, so a session replaced by New or Open keeps
+it).
+
+While a project is being edited a bundled track is still referenced in
+place, as decided above. When it cannot be (on Windows, the app is on
+another drive than the project), `analyze_music` no longer refuses it: the
+`MusicRef.path` is already `music/<file name>`, the session resolves it to
+the bundled file until the next save, and that save makes the copy.
+
+Consequences: a saved project is self-contained and opens with no missing
+music after the app moves or on another machine; each project that uses a
+bundled track carries its own copy (a few MB). Projects saved under the
+original decision keep working and get the copy on their next save.
