@@ -15,6 +15,7 @@ use kv_core::Micros;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+mod chaptered;
 #[cfg(feature = "ffmpeg")]
 mod ffmpeg;
 #[cfg(feature = "ffmpeg")]
@@ -25,6 +26,7 @@ mod frame;
 pub use ffmpeg::FfmpegBackend;
 #[cfg(feature = "ffmpeg")]
 mod ffmpeg_encode;
+pub use chaptered::{open_item_video, Chapter, ChapteredReader};
 #[cfg(feature = "ffmpeg")]
 pub use ffmpeg_decode::FfmpegVideoReader;
 #[cfg(feature = "ffmpeg")]
@@ -81,6 +83,11 @@ pub enum MediaError {
     /// Decoding failed (corrupt or truncated data, unsupported codec).
     #[error("cannot decode {path:?}: {message}")]
     Decode { path: PathBuf, message: String },
+
+    /// A [`ChapteredReader`] was given no chapters or a chapter without a
+    /// positive duration.
+    #[error("invalid chapters: {0}")]
+    InvalidChapters(String),
 }
 
 /// A platform media backend. Implementations must be usable from background
