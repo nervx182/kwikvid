@@ -50,7 +50,13 @@ pub const INSTRUCTIONS: &str = "kwikvid video editor. Tools: \
     media_add / media_remove (library), \
     edit_pin_range / edit_unpin_range (force a moment into the edit, or stop forcing it), \
     edit_exclude_range / edit_unexclude_range (keep a moment out, or allow it again), \
-    edit_undo / edit_redo. \
+    edit_undo / edit_redo, \
+    edit_move_segment (reorder the edit), edit_nudge_cut (move a cut by whole beats), \
+    edit_move_cut (move a cut to an exact time), clip_audio_set (clip sound on/off), \
+    music_volume_set (0-100 percent); these tweaks do not rebuild the edit, \
+    style_set (cut, smooth or action; rebuilds the edit), \
+    aspect_set (landscape16x9, portrait9x16 or square1x1), \
+    title_set / title_clear (title card at the start of a section). \
     Write tools rebuild the auto-edit when the project has music and its analysis, \
     and return revision, can_undo, can_redo, dirty, manual_edits_replaced, \
     regen_error and an edit summary. The project://current resource holds the \
@@ -82,7 +88,10 @@ impl KwikvidServer {
         KwikvidServer {
             session: Arc::new(Mutex::new(Session::new(root))),
             ctx,
-            tool_router: Self::project_router() + Self::media_router() + Self::edit_router(),
+            tool_router: Self::project_router()
+                + Self::media_router()
+                + Self::edit_router()
+                + Self::style_router(),
         }
     }
 
@@ -319,7 +328,7 @@ mod tests {
         let server = server();
         let readme = include_str!("../README.md");
         let tools = server.tool_router.list_all();
-        assert_eq!(tools.len(), 9, "{tools:?}");
+        assert_eq!(tools.len(), 18, "{tools:?}");
         for tool in tools {
             assert!(INSTRUCTIONS.contains(&*tool.name), "{} missing", tool.name);
             assert!(

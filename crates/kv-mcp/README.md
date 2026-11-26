@@ -4,8 +4,9 @@ The kwikvid MCP server. The `kwikvid-mcp` binary speaks the
 [Model Context Protocol](https://modelcontextprotocol.io) over stdio and holds
 one `kv_session::Session`: the same project, undo history and auto-edit
 rebuild the desktop app uses. Every write tool maps onto a `kv_core::Command`
-applied with `Session::apply_and_regenerate`, so pins, excludes and media
-changes rebuild the edit exactly as in the app (ADR 0010), and one undo
+applied with `Session::apply_and_regenerate`, so pins, excludes, media
+changes and style choices rebuild the edit exactly as in the app (ADR 0010),
+while manual tweaks (reorder, cut moves, audio, volume) never do, and one undo
 reverts the command together with the rebuild it caused.
 
 | Tool | kv-core / kv-session | Input |
@@ -19,6 +20,15 @@ reverts the command together with the rebuild it caused.
 | `edit_unexclude_range` | `UnexcludeRange` | same as `edit_pin_range` (must equal an exclude) |
 | `edit_undo` | `Session::undo` | none |
 | `edit_redo` | `Session::redo` | none |
+| `edit_move_segment` | `MoveSegment` (tweak, no rebuild) | `from`, `to` (segment indices from 0), optional `section` |
+| `edit_nudge_cut` | `Session::nudge_cut` → `MoveCut` (tweak, no rebuild) | `cut` (1..segments), `beats` (negative: earlier; 0 snaps to the nearest beat), optional `section` |
+| `edit_move_cut` | `MoveCut` (tweak, no rebuild) | `cut`, `to_us` (timeline time, off the beat grid if need be), optional `section` |
+| `clip_audio_set` | `SetClipAudio` (tweak, no rebuild) | `media_id`, `enabled` |
+| `music_volume_set` | `SetMusicVolume` (tweak, no rebuild) | `percent` (0-100) |
+| `style_set` | `SetStyle` (rebuilds the edit) | `style`: `cut`, `smooth` or `action`; optional `section` |
+| `aspect_set` | `SetAspectRatio` (no rebuild) | `aspect`: `landscape16x9` (16:9 landscape), `portrait9x16` (9:16 portrait) or `square1x1` (1:1 square) |
+| `title_set` | `SetTitleCard` (no rebuild) | `text` (1-80 characters), optional `duration_us` (0.5-5 s, default 3 s), optional `section` |
+| `title_clear` | `SetTitleCard` with no title (no rebuild) | optional `section` |
 
 ## Results
 
