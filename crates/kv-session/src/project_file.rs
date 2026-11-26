@@ -91,7 +91,8 @@ pub enum MissingKind {
 
 /// `path` (a project path relative to `from_root`) as a project path relative
 /// to `to_root`: `/`-separated on every OS, with `..` steps when the file is
-/// outside `to_root`. Pure lexical arithmetic; nothing is read from disk.
+/// outside `to_root`. Symlinked roots are handled like
+/// [`Session::to_project_path`] and [`Session::resolve`] handle them.
 ///
 /// Errors when the file cannot be reached relatively from `to_root` (another
 /// drive or share), a root is not absolute, or the file is `to_root` itself.
