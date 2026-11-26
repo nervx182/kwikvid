@@ -15,6 +15,8 @@ kv-core = { path = "../kv-core" }
 kv-gopro = { path = "../kv-gopro" }
 # No FFmpeg: the media backend is injected (`JobContext::media`).
 kv-media = { path = "../kv-media", default-features = false }
+# The export pipeline; no preview GPU code.
+kv-render = { path = "../kv-render", default-features = false }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

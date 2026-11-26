@@ -23,7 +23,11 @@
 //!    music bed with the clip audio of every media item that has it on
 //!    mixed under it ([`kv_audio::render_clip_audio`],
 //!    [`kv_audio::mix_under_music`]).
+//! 4. After each frame, report [`Progress`]; a callback returning
+//!    [`ControlFlow::Break`] cancels the export ([`RenderError::Cancelled`])
+//!    and the partial file is removed.
 
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -121,6 +125,9 @@ pub enum RenderError {
     /// Compositing a frame failed.
     #[error(transparent)]
     Composite(#[from] CompositeError),
+    /// The progress callback asked to stop.
+    #[error("export cancelled")]
+    Cancelled,
 }
 
 /// Write section `section` of `project` to an MP4 at `out`.
@@ -135,11 +142,13 @@ pub enum RenderError {
 /// clip audio of media items with `clip_audio` on is mixed under the music
 /// at full level, through a limiter ([`kv_audio::mix_under_music`]).
 ///
-/// `progress` is called after every frame. Every check that does not need
+/// `progress` is called after every frame; returning
+/// [`ControlFlow::Break`] stops the export with [`RenderError::Cancelled`].
+/// Every check that does not need
 /// the output (missing media, empty edit, bad settings, unreadable music
 /// or clip audio)
 /// fails before `out` is created. If writing fails part-way, the partial
-/// file is removed (best effort).
+/// file is removed (best effort); so is a cancelled export's.
 #[allow(clippy::too_many_arguments)]
 pub fn export(
     project: &Project,
@@ -149,7 +158,7 @@ pub fn export(
     encoder: &dyn Encoder,
     out: &Path,
     settings: &ExportSettings,
-    progress: &mut dyn FnMut(Progress),
+    progress: &mut dyn FnMut(Progress) -> ControlFlow<()>,
 ) -> Result<ExportReport, RenderError> {
     let started = Instant::now();
     let sec = project
@@ -339,7 +348,7 @@ impl Job<'_> {
         mut writer: Box<dyn VideoWriter>,
         frame_plan: &crate::FramePlan<'_>,
         audio: &[f32],
-        progress: &mut dyn FnMut(Progress),
+        progress: &mut dyn FnMut(Progress) -> ControlFlow<()>,
     ) -> Result<String, RenderError> {
         let s = self.settings;
         let channels = usize::from(s.audio_channels);
@@ -356,10 +365,14 @@ impl Job<'_> {
                 writer.write_audio(&audio[audio_sent..upto])?;
                 audio_sent = upto;
             }
-            progress(Progress {
+            let flow = progress(Progress {
                 frame: frame.index + 1,
                 total_frames: total,
             });
+            if flow.is_break() {
+                tracing::info!(frame = frame.index + 1, total, "export cancelled");
+                return Err(RenderError::Cancelled);
+            }
         }
         if audio_sent < audio.len() {
             writer.write_audio(&audio[audio_sent..])?;
@@ -671,7 +684,10 @@ mod tests {
             enc,
             Path::new("/nonexistent/out.mp4"),
             &settings(),
-            &mut |pr| progress.push(pr),
+            &mut |pr| {
+                progress.push(pr);
+                ControlFlow::Continue(())
+            },
         )
     }
 
@@ -794,7 +810,7 @@ mod tests {
             &enc,
             Path::new("/nonexistent/out.mp4"),
             &s,
-            &mut |_| {},
+            &mut |_| ControlFlow::Continue(()),
         )
         .unwrap();
         assert_eq!(report.frames, 20);
@@ -891,7 +907,7 @@ mod tests {
                 &enc,
                 Path::new("/x.mp4"),
                 &settings(),
-                &mut |_| {},
+                &mut |_| ControlFlow::Continue(()),
             ),
             Err(RenderError::SectionNotFound(SectionId(42)))
         ));
@@ -909,11 +925,51 @@ mod tests {
                 &enc,
                 Path::new("/x.mp4"),
                 &bad,
-                &mut |_| {},
+                &mut |_| ControlFlow::Continue(()),
             ),
             Err(RenderError::Media(MediaError::InvalidExportSettings(_)))
         ));
         assert_eq!(enc.created.load(Ordering::SeqCst), 0, "no output created");
+    }
+
+    #[test]
+    fn break_from_progress_cancels_and_removes_the_partial_file() {
+        let p = project(2, &[1, 2]);
+        let (media, enc) = (FakeMedia::default(), FakeEncoder::default());
+        // The fake encoder writes nothing; stand in for its partial file.
+        let out = std::env::temp_dir().join(format!("kv-render-cancel-{}.mp4", std::process::id()));
+        std::fs::write(&out, b"partial").unwrap();
+        let mut seen = Vec::new();
+        let err = export(
+            &p,
+            Project::DEFAULT_SECTION,
+            Path::new("/root"),
+            &media,
+            &enc,
+            &out,
+            &settings(),
+            &mut |pr| {
+                seen.push(pr.frame);
+                if pr.frame == 5 {
+                    ControlFlow::Break(())
+                } else {
+                    ControlFlow::Continue(())
+                }
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, RenderError::Cancelled), "{err:?}");
+        assert_eq!(seen, vec![1, 2, 3, 4, 5], "stops right after the break");
+        let calls = enc.calls.lock().unwrap().clone();
+        assert!(!calls.contains(&Call::Finish), "not finalised");
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|c| matches!(c, Call::Video { .. }))
+                .count(),
+            5
+        );
+        assert!(!out.exists(), "partial file removed");
     }
 
     #[test]

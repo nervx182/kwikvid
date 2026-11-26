@@ -11,7 +11,7 @@
 //! [`Session::open`], [`RecentProjects`]), and in background jobs
 //! ([`JobRunner`]) through injected backends and `kv-cache`.
 //! Regenerate/re-roll lives in [`regen`], import and library thumbnails in
-//! [`import`]; a later module adds export.
+//! [`import`], export in [`export`].
 //!
 //! # Paths
 //!
@@ -35,6 +35,7 @@
 
 mod analysis;
 mod error;
+pub mod export;
 mod filmstrips;
 pub mod import;
 mod jobs;
@@ -44,6 +45,10 @@ pub mod regen;
 
 pub use analysis::{AudioAnalyzer, MusicAnalyzer};
 pub use error::SessionError;
+pub use export::{
+    export_size, ExportEvent, ExportInput, ExportJob, ExportOptions, ExportRequest,
+    ExportResolution, ExportSummary, EXPORT_FPS,
+};
 pub use filmstrips::{
     FilmstripGenerator, MediaFilmstrips, FILMSTRIP_COUNT, FILMSTRIP_HEIGHT, FILMSTRIP_JPEG_QUALITY,
 };

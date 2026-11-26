@@ -2647,6 +2647,7 @@ dependencies = [
  "kv-core",
  "kv-gopro",
  "kv-media",
+ "kv-render",
  "kv-testkit",
  "serde",
  "serde_json",
