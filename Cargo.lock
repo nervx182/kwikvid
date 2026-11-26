@@ -2879,6 +2879,7 @@ dependencies = [
 name = "kv-session"
 version = "0.0.1"
 dependencies = [
+ "criterion",
  "image",
  "kv-audio",
  "kv-autoedit",

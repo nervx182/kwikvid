@@ -125,6 +125,21 @@ jobs:
         run: |
           set -o pipefail
           cargo bench --workspace --locked --bench '*' 2>&1 | tee bench-output.txt
+      # `TARGET <name> <measured_ms> <target_ms>` lines (AGENTS.md, "Full
+      # regression suite") as a table. Reported only: a missed target does
+      # not fail the job (the virtual runner's numbers are noisy).
+      - name: Performance targets
+        if: always()
+        run: |
+          {
+            echo '## Performance targets'
+            echo
+            echo '| Target | Measured (ms) | Budget (ms) | Result |'
+            echo '|---|---:|---:|---|'
+            awk '$1 == "TARGET" && NF == 4 { printf "| %s | %s | %s | %s |\n", $2, $3, $4, ($3 + 0 <= $4 + 0) ? "pass" : "**FAIL**" }' bench-output.txt 2>/dev/null || true
+            grep -q '^TARGET ' bench-output.txt 2>/dev/null || echo '| (no TARGET lines in bench-output.txt) | | | |'
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Benchmark summary
         if: always()
         run: |
