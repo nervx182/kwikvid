@@ -316,14 +316,10 @@ fn main() -> anyhow::Result<()> {
         .init();
     let opts = Options::parse(std::env::args().skip(1));
 
-<<<<<<< HEAD
-    library::register(tauri::Builder::default())
-        .plugin(tauri_plugin_opener::init())
-=======
     let latest_frame = Arc::new(webgl::LatestFrame::default());
     let builder = webgl::register(tauri::Builder::default(), Arc::clone(&latest_frame));
     library::register(builder)
->>>>>>> origin/main
+        .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             apply,
             undo,

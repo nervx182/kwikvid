@@ -132,19 +132,11 @@ fn session_with_clips() -> Session {
 ///
 /// Clip 3's 2.2-2.8 s is pinned, so segment 2 covers a pin.
 fn timeline_edit() -> Snapshot {
-<<<<<<< HEAD
-    timeline_edit_session().snapshot()
-}
-
-/// The session of [`timeline_edit`].
-fn timeline_edit_session() -> Session {
-=======
     timeline_session().snapshot()
 }
 
 /// The session behind [`timeline_edit`].
 fn timeline_session() -> Session {
->>>>>>> origin/main
     let mut s = session_with_clips();
     s.apply(Command::SetMusic {
         section: S,
@@ -179,8 +171,6 @@ fn timeline_session() -> Session {
     s.apply(Command::ReplaceEdl { section: S, edl })
         .expect("edl");
     s
-<<<<<<< HEAD
-=======
 }
 
 /// The manual tweak fixtures (`ui/js/tweaks.js`), each one command applied
@@ -222,7 +212,6 @@ fn tweaks_fixtures() -> Vec<(&'static str, Snapshot)> {
         ("tweaks-clip-audio", audio),
         ("tweaks-volume", volume),
     ]
->>>>>>> origin/main
 }
 
 fn fixed(secs: i64) -> Command {
@@ -639,7 +628,7 @@ fn export_fixtures() -> Vec<(&'static str, String)> {
     use kv_core::AspectRatio;
     use kv_media::VideoCodec;
     use kv_session::{ExportEvent, ExportOptions, ExportResolution, ExportSummary, ExportUpdate};
-    let mut s = timeline_edit_session();
+    let mut s = timeline_session();
     // The fixture's clips do not exist on this machine: the real blocker.
     let blocked = s.export_blocker(S);
     assert!(blocked.is_some(), "fixture media should be missing");
