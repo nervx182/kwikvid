@@ -19,9 +19,11 @@
 //!   hosts (pulled by hand), `CpalOutput` (cpal; macOS, or the
 //!   `audio-device` feature elsewhere) for real playback. Without a device
 //!   the engine keeps its [`SystemClock`](super::SystemClock).
-//!
-//! TODO(#122): mix clip audio under the music the same way as export
-//! (`kv_audio::render_clip_audio` + `kv_audio::mix_under_music`).
+//! - The bed is the music alone, or the music with the clip audio mixed
+//!   under it (built by the engine, see `PreviewEngine::set_edit`).
+//!   Swapping it ([`AudioTransport::set_bed_and_volume`]) keeps the play
+//!   state and the frame mapping, so the clock does not jump and the next
+//!   buffer continues from the same bed position.
 
 use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -133,6 +135,21 @@ impl AudioTransport {
     /// Replace the bed (bed frame 0 = playhead 0), keeping the play state
     /// and position. `None` plays silence.
     pub fn set_bed(&self, bed: Option<Arc<PcmAudio>>) -> Result<(), AudioError> {
+        self.swap_bed(bed, None)
+    }
+
+    /// [`set_bed`](Self::set_bed) and [`set_volume`](Self::set_volume) at
+    /// once: no device buffer sees the new bed at the old gain or the other
+    /// way round. The old bed is freed outside the lock the device takes.
+    pub fn set_bed_and_volume(
+        &self,
+        bed: Option<Arc<PcmAudio>>,
+        gain: f32,
+    ) -> Result<(), AudioError> {
+        self.swap_bed(bed, Some(gain))
+    }
+
+    fn swap_bed(&self, bed: Option<Arc<PcmAudio>>, gain: Option<f32>) -> Result<(), AudioError> {
         if let Some(b) = &bed {
             if b.sample_rate != self.sample_rate || b.channels != self.channels {
                 return Err(AudioError::FormatMismatch {
@@ -143,7 +160,13 @@ impl AudioTransport {
                 });
             }
         }
-        self.lock_playback().bed = bed;
+        let mut p = self.lock_playback();
+        let old = std::mem::replace(&mut p.bed, bed);
+        if let Some(g) = gain {
+            self.set_volume(g);
+        }
+        drop(p);
+        drop(old);
         Ok(())
     }
 
@@ -512,6 +535,33 @@ mod tests {
         assert!((got[0] - 0.0005).abs() < 1e-6, "{}", got[0]);
         assert!(got[10..].iter().all(|s| *s == 0.0));
         assert_eq!(t.volume(), 0.5);
+    }
+
+    #[test]
+    fn swapping_the_bed_while_playing_keeps_position_and_clock() {
+        let (wall, t, out) = rig();
+        let clock = t.clock();
+        t.set_bed(Some(ramp(5_000))).unwrap();
+        t.sync(true, Micros(1_000_000), Micros(0));
+        assert_eq!(index(out.pull(10, Micros(0))[9]), 1_009);
+        wall.advance(Micros(10_000));
+        let before = clock.now();
+        // A louder copy of the bed at a new gain: the next buffer carries on
+        // from bed frame 1010 at the new level, the clock is unchanged.
+        let louder = Arc::new(PcmAudio {
+            samples: ramp(5_000).samples.iter().map(|s| s * 2.0).collect(),
+            sample_rate: RATE,
+            channels: 1,
+        });
+        t.set_bed_and_volume(Some(louder), 0.5).unwrap();
+        assert_eq!(clock.now(), before);
+        assert!(t.is_playing());
+        assert_eq!(t.volume(), 0.5);
+        let got = out.pull(5, Micros(0));
+        assert_eq!(
+            got.iter().map(|s| index(*s)).collect::<Vec<_>>(),
+            [1_010, 1_011, 1_012, 1_013, 1_014]
+        );
     }
 
     #[test]

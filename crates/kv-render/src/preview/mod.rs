@@ -33,12 +33,16 @@
 //! - **Audio.** With [`PreviewConfig::audio`] the engine renders the
 //!   section's music bed for the transport, keeps it in step on play,
 //!   pause, seek and edit, and takes its time from the transport's
-//!   [`AudioClock`] so picture follows sound (see [`audio`]).
+//!   [`AudioClock`] so picture follows sound (see [`audio`]). The clip
+//!   audio of media with `clip_audio` on is mixed under the music as in
+//!   export, rendered on a background thread and swapped in without a gap
+//!   ([`PreviewEngine::wait_for_audio`] waits for it).
 //!
 //! Driving: the native layer calls [`PreviewEngine::tick`] once per vsync;
 //! [`Pacer`] does it on a thread for hosts without one.
 
 pub mod audio;
+mod bed;
 mod clock;
 mod output;
 
@@ -285,6 +289,8 @@ pub struct PreviewEngine {
     tick_lock: Mutex<()>,
     /// Last rendered bed: (music path, length) and the PCM.
     bed: Mutex<Option<(PathBuf, Micros, Arc<PcmAudio>)>>,
+    /// Mixes the clip audio under the music bed.
+    beds: bed::BedMixer,
     /// Text of the title image the compositor holds, if any.
     title_text: Mutex<Option<String>>,
     workers: Vec<JoinHandle<()>>,
@@ -350,6 +356,7 @@ impl PreviewEngine {
             on_position: Mutex::new(None),
             tick_lock: Mutex::new(()),
             bed: Mutex::new(None),
+            beds: bed::BedMixer::default(),
             title_text: Mutex::new(None),
             workers,
         })
@@ -388,7 +395,14 @@ impl PreviewEngine {
         }
         self.update_title(sec.title.as_ref())?;
         if let Some(audio) = &self.config.audio {
-            self.update_bed(audio, project, sec.music.as_ref(), end);
+            let mut clip_sources: Vec<(MediaId, PathBuf)> = sources
+                .iter()
+                .filter(|(id, _)| project.media_item(**id).is_some_and(|m| m.clip_audio))
+                .map(|(id, path)| (*id, path.clone()))
+                .collect();
+            clip_sources.sort();
+            let clip = bed::ClipKey::new(&edl, clip_sources, end);
+            self.update_bed(audio, project, sec.music.as_ref(), end, clip);
         }
         let now = self.config.clock.now();
         let pos = {
@@ -493,6 +507,14 @@ impl PreviewEngine {
         };
         self.shared.notify();
         self.report_position(pos);
+    }
+
+    /// Wait until the audio transport plays the bed for the last
+    /// [`set_edit`](Self::set_edit) (the clip audio mix renders in the
+    /// background), up to `timeout`. True at once without audio; false on
+    /// timeout.
+    pub fn wait_for_audio(&self, timeout: Duration) -> bool {
+        self.config.audio.is_none() || self.beds.wait(timeout)
     }
 
     /// Current playhead position on the section timeline.
@@ -624,17 +646,19 @@ impl PreviewEngine {
     }
 
     /// Render (or reuse) the music bed for a section of length `end` and
-    /// hand it to `audio` with the project's music volume. The bed is
-    /// rendered at 100%; the volume is applied live by the transport. A
-    /// music file that cannot be read plays as silence.
+    /// hand it to `audio` with the project's music volume, with the clip
+    /// audio of `clip` mixed under it (see [`bed`]). The music is rendered
+    /// at 100%; without clip audio the volume is applied live by the
+    /// transport. A music file that cannot be read plays as silence.
     fn update_bed(
         &self,
-        audio: &AudioTransport,
+        audio: &Arc<AudioTransport>,
         project: &Project,
         music: Option<&MusicRef>,
         end: Micros,
+        clip: Option<bed::ClipKey>,
     ) {
-        audio.set_volume(f32::from(project.settings.music_volume_percent) / 100.0);
+        let volume = f32::from(project.settings.music_volume_percent) / 100.0;
         let bed = music.and_then(|m| {
             let path = resolve(&self.config.media_root, &m.path);
             let mut cache = lock(&self.bed);
@@ -657,9 +681,7 @@ impl PreviewEngine {
                 }
             }
         });
-        if let Err(e) = audio.set_bed(bed) {
-            tracing::warn!("preview: {e}");
-        }
+        self.beds.update(audio, bed, volume, clip);
     }
 
     fn report_position(&self, pos: Micros) {
