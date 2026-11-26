@@ -28,9 +28,13 @@ Log level: `RUST_LOG=debug cargo run -p kv-app`.
 
 `--preview-test-pattern` plays a moving test pattern (scrolling colour bars,
 a bouncing box, the frame number in binary along the bottom) in the viewer
-through the preview backend, for manual checks of the native layer on macOS:
-`cargo run -p kv-app -- --preview-test-pattern`. Other platforms log that
-there is no preview backend yet.
+through the preview backend, for manual checks:
+`cargo run -p kv-app -- --preview-test-pattern`.
+
+Preview backend: the native Metal layer on macOS, the WebGL fallback (raw
+frames at most 960x540 over `kvframe://` into a WebGL2 canvas, ADR 0007)
+elsewhere. `KV_PREVIEW=webgl` forces the fallback (e.g. on macOS),
+`KV_PREVIEW=off` turns the preview off.
 
 ## Download a CI build (macOS, Apple Silicon)
 
@@ -72,6 +76,8 @@ which). Signing, notarisation and a DMG are out of scope for now.
 | `src/preview.rs` | `PreviewBackend` (the one place the preview backend is chosen), viewer rect and letterbox math, test pattern. Portable. |
 | `src/blit.rs` | `SurfaceGpu` (a `GpuContext` that can present) and `Blitter` (draws the last frame letterboxed). Portable, tested headless. |
 | `src/native_view.rs` | macOS only: the `NSView` + `CAMetalLayer` under the webview, its wgpu surface (Fifo, one frame of latency) and the `FrameSink` (ADR 0007). |
+| `src/webgl.rs` | WebGL fallback: `WebGlSink` keeps the latest CPU frame (capped to 960x540) and the `kvframe://latest?after=<seq>` protocol serves it as raw RGBA. Portable, unit-tested. |
+| `ui/js/viewer-webgl.js` | With the `webgl` backend: a canvas in the viewer, polling `kvframe://` each animation frame and drawing it letterboxed with WebGL2. |
 | `src/transport.rs` | Transport over the preview engine: `play` / `pause` / `seek` / `get_transport`, `kv://position`, edits handed to `set_edit`, seek latency from the engine's `preview_seek` span (`get_preview_stats`). Unit-tested with a fake engine. |
 | `ui/js/transport.js` | Play/pause button, m:ss.ff readout, Space / arrows / Shift+arrows / Home / End, ruler scrubbing (one seek in flight), debug overlay on Cmd/Ctrl+Shift+D. |
 | `ui/js/viewer.js` | Sends the viewer rectangle (`set_viewer_rect`) on load, resize, layout change and fullscreen. |
@@ -92,6 +98,11 @@ which). Signing, notarisation and a DMG are out of scope for now.
   pixels relative to the page and `devicePixelRatio`; resolves to `null`.
   The native layer covers it and letterboxes the preview to the project's
   aspect ratio.
+- `get_preview_backend()`: `"native-metal"`, `"webgl"` or `"off"`.
+- `kvframe://latest?after=<seq>` (Windows: `http://kvframe.localhost/latest?after=<seq>`):
+  the newest preview frame newer than `seq` as raw RGBA, with
+  `X-Frame-Width`, `X-Frame-Height`, `X-Frame-Seq` and `X-Frame-Pts`
+  headers; 204 when nothing newer exists.
 - `play()`, `pause()`, `seek({ position })`, `get_transport()`: resolve to
   `{ position, playing, frame_us }` (microseconds). While it changes, the
   backend emits the same object as `kv://position`, at most ~15 times a

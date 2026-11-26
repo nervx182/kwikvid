@@ -8,6 +8,7 @@ import { initProject, renderProject } from "./project.js";
 import { initTimeline, renderTimeline } from "./timeline.js";
 import { initAutoEdit, renderAutoEdit } from "./autoedit.js";
 import { initViewer } from "./viewer.js";
+import { initViewerWebGl, renderViewerWebGl } from "./viewer-webgl.js";
 import { initLibrary, renderLibrary } from "./library.js";
 import { initInspector, renderInspector } from "./inspector.js";
 import { initTransport, renderTransport } from "./transport.js";
@@ -31,6 +32,7 @@ function render(snapshot) {
   renderMusic(snapshot);
   renderSummary(snapshot);
   renderProject(snapshot);
+  renderViewerWebGl(snapshot);
 }
 
 function renderSummary(s) {
@@ -75,6 +77,7 @@ initInspector(render);
 initStyles(run);
 initMusic(run);
 initViewer(document.querySelector('[data-testid="viewer"]'), api.setViewerRect);
+initViewerWebGl(document.querySelector('[data-testid="viewer"]'), api);
 api.onState(render);
 run(api.getState());
 
