@@ -46,6 +46,18 @@ pub enum SessionError {
     /// The path is not valid UTF-8, so it cannot be stored in a project file.
     #[error("That file name contains characters kwikvid can't store.")]
     NonUtf8Path(PathBuf),
+
+    /// A cut was nudged by beats in a section without music.
+    #[error("Add music to move cuts to the beat.")]
+    NoMusic,
+
+    /// A cut was nudged by beats before the music's analysis finished.
+    #[error("Still analysing the music…")]
+    MusicNotAnalysed,
+
+    /// A cut was nudged to before the first beat, or the music has no beats.
+    #[error("There is no beat there to move the cut to.")]
+    NoBeatThere,
 }
 
 /// A short, user-facing sentence for a rejected command.

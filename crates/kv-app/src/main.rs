@@ -334,6 +334,7 @@ fn main() -> anyhow::Result<()> {
             set_viewer_rect,
             get_preview_backend,
             timeline::get_beats,
+            timeline::nudge_cut,
             library::import,
             library::pick_media,
             transport::play,

@@ -466,3 +466,116 @@ fn regenerate_50_clips_timing() {
         }
     );
 }
+
+fn set_style(style: StylePreset) -> Command {
+    Command::SetStyle { section: S, style }
+}
+
+fn end_of(edl: &Edl) -> i64 {
+    edl.segments
+        .iter()
+        .map(|g| g.timeline_start.0 + g.timeline_len().0)
+        .max()
+        .unwrap_or(0)
+}
+
+fn hilight_in(s: &Session, g: &Segment) -> bool {
+    s.project()
+        .media
+        .iter()
+        .find(|m| m.id == g.media_id)
+        .is_some_and(|m| m.hilights.iter().any(|h| g.src_in <= *h && *h < g.src_out))
+}
+
+#[test]
+fn set_style_applies_the_preset() {
+    let src = source(40);
+    let mut s = ready(4, &src);
+    let cut = edit(&s).clone();
+    assert!(cut
+        .segments
+        .iter()
+        .all(|g| g.transition == Transition::Cut && g.speed == Speed::NORMAL));
+
+    // Smooth: crossfades, same length.
+    let snap = s
+        .apply_and_regenerate(set_style(StylePreset::Smooth), &src)
+        .unwrap();
+    assert_eq!(snap.regen_error, None);
+    assert!(!snap.manual_edits_replaced);
+    let smooth = edit(&s).clone();
+    assert!(smooth
+        .segments
+        .iter()
+        .any(|g| matches!(g.transition, Transition::Crossfade { .. })));
+    assert_eq!(end_of(&smooth), end_of(&cut));
+    // The stored edit is the styled auto-edit: regenerating changes nothing.
+    let rev = s.revision();
+    s.regenerate(S, &src).unwrap();
+    assert_eq!(s.revision(), rev);
+
+    // Action: the segments on HiLights play in 2x slow motion.
+    let snap = s
+        .apply_and_regenerate(set_style(StylePreset::Action), &src)
+        .unwrap();
+    assert_eq!(snap.regen_error, None);
+    assert!(
+        !snap.manual_edits_replaced,
+        "a styled edit is not a manual edit"
+    );
+    let action = edit(&s).clone();
+    let slow: Vec<_> = action
+        .segments
+        .iter()
+        .filter(|g| g.speed == kv_autoedit::style::SLOW_MOTION)
+        .collect();
+    assert!(!slow.is_empty());
+    assert!(slow.iter().all(|g| hilight_in(&s, g)));
+    assert!(action
+        .segments
+        .iter()
+        .all(|g| g.transition == Transition::Cut));
+    assert_eq!(end_of(&action), end_of(&cut));
+
+    // Back to Cut gives the plain edit again; undo steps back through styles.
+    s.apply_and_regenerate(set_style(StylePreset::Cut), &src)
+        .unwrap();
+    assert_eq!(*edit(&s), cut);
+    s.undo().unwrap();
+    assert_eq!(*edit(&s), action);
+    s.undo().unwrap();
+    assert_eq!(*edit(&s), smooth);
+}
+
+#[test]
+fn styled_edit_survives_other_triggers_and_reroll() {
+    let src = source(40);
+    let mut s = ready(4, &src);
+    s.apply_and_regenerate(set_style(StylePreset::Smooth), &src)
+        .unwrap();
+    let has_fade = |s: &Session| {
+        edit(s)
+            .segments
+            .iter()
+            .any(|g| matches!(g.transition, Transition::Crossfade { .. }))
+    };
+
+    let snap = s.apply_and_regenerate(fixed(12), &src).unwrap();
+    assert!(!snap.manual_edits_replaced);
+    assert!(has_fade(&s));
+
+    let snap = s.reroll(S, &src).unwrap();
+    assert!(!snap.manual_edits_replaced);
+    assert!(has_fade(&s));
+
+    // A manual tweak on top of the styled edit is still detected.
+    s.apply(Command::MoveSegment {
+        section: S,
+        from: 0,
+        to: 1,
+    })
+    .unwrap();
+    let snap = s.apply_and_regenerate(fixed(15), &src).unwrap();
+    assert!(snap.manual_edits_replaced);
+    assert!(has_fade(&s));
+}
