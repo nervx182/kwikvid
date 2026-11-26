@@ -156,6 +156,10 @@ fn handshake_list_and_call_every_tool() {
             "edit_undo",
             "edit_unexclude_range",
             "edit_unpin_range",
+            "export_cancel",
+            "export_options",
+            "export_start",
+            "export_status",
             "media_add",
             "media_import",
             "media_remove",
@@ -163,6 +167,10 @@ fn handshake_list_and_call_every_tool() {
             "music_clear",
             "music_set",
             "music_volume_set",
+            "project_new",
+            "project_open",
+            "project_save",
+            "project_save_as",
             "project_state",
             "style_set",
             "title_clear",
@@ -453,4 +461,96 @@ fn import_music_and_target_length_build_an_edit() {
 
     let (is_error, text) = c.call("music_set", json!({"path": "clips/missing.wav"}));
     assert!(is_error, "{text}");
+}
+
+/// A temp `--root` with 3 tagged clips in `clips/` and a 20 s click track
+/// `song.wav`, and a server on it with an edit of `seconds` built.
+fn edit_in_temp_root(seconds: u64) -> (tempfile::TempDir, Client) {
+    let root = tempfile::tempdir().unwrap();
+    let clips = root.path().join("clips");
+    std::fs::create_dir(&clips).unwrap();
+    for clip in kv_testkit::tagged_clip_set(3, 6.0) {
+        std::fs::copy(&clip, clips.join(clip.file_name().unwrap())).unwrap();
+    }
+    let song = kv_testkit::click_track(120.0, 20.0, kv_testkit::DEFAULT_SAMPLE_RATE);
+    std::fs::copy(&song, root.path().join("song.wav")).unwrap();
+    let mut c = Client::spawn_in(root.path(), &root.path().join(".cache"));
+    c.initialize();
+    c.call_ok("media_import", json!({"paths": ["clips"]}));
+    c.call_ok("music_set", json!({"path": "song.wav"}));
+    let r = c.call_ok("edit_set_target_length", json!({"seconds": seconds}));
+    assert_eq!(r["regen_error"], Value::Null, "{r}");
+    (root, c)
+}
+
+/// FFmpeg-backed: export a 3 s edit at 1080p, wait for `done`, and probe
+/// the file; then save the project, start a new one, open it again and
+/// regenerate.
+#[test]
+fn export_and_project_round_trip() {
+    use kv_media::MediaBackend;
+    let (root, mut c) = edit_in_temp_root(3);
+
+    let options = c.call_ok("export_options", json!({}));
+    assert_eq!(options["blocked"], Value::Null, "{options}");
+    assert_eq!(options["codecs"][0], "h264", "{options}");
+    assert_eq!(options["file_name"], "Untitled.mp4");
+
+    let started = c.call_ok("export_start", json!({"path": "out.mp4"}));
+    assert_eq!(started["width"], 1920, "{started}");
+    assert_eq!(started["height"], 1080, "{started}");
+    assert_eq!(started["fps"], 30, "{started}");
+    let id = started["id"].as_u64().unwrap();
+    // A second export while the first runs is refused (unless it already
+    // finished, which a 90-frame 1080p export does not do this fast).
+    let (is_error, text) = c.call("export_start", json!({"path": "two.mp4"}));
+    assert!(is_error && text.contains("still running"), "{text}");
+
+    let mut status = Value::Null;
+    for _ in 0..20 {
+        status = c.call_ok("export_status", json!({"id": id, "wait_ms": 30_000}));
+        if status["state"] != "started" && status["state"] != "progress" {
+            break;
+        }
+    }
+    assert_eq!(status["state"], "done", "{status}");
+    assert_eq!(status["id"], id);
+    assert_eq!(status["report"]["path"], "out.mp4", "{status}");
+    let out = root.path().join("out.mp4");
+    let info = kv_media::FfmpegBackend::new().unwrap().probe(&out).unwrap();
+    let d = info.duration.0;
+    assert!((d - 3_000_000).abs() <= 200_000, "duration {d}");
+    let video = info.video.unwrap();
+    assert_eq!((video.width, video.height), (1920, 1080));
+    let (is_error, _) = c.call("export_cancel", json!({"id": id}));
+    assert!(is_error, "cancel after done is an error");
+
+    // Save, new, open: the same project, music analysed again.
+    let saved = c.call_ok("project_save_as", json!({"path": "trip"}));
+    assert_eq!(saved["file"], "trip.kwikvid");
+    let before = c.call_ok("project_state", json!({}))["project"].clone();
+    let r = c.call_ok("project_new", json!({}));
+    assert_eq!(r["file"], Value::Null);
+    assert_eq!(r["edit"]["segments"], 0);
+    let r = c.call_ok("project_open", json!({"path": "trip.kwikvid"}));
+    assert_eq!(r["missing"], json!([]), "{r}");
+    assert!(r.get("analysis_errors").is_none(), "{r}");
+    assert_eq!(c.call_ok("project_state", json!({}))["project"], before);
+    let r = c.call_ok("edit_regenerate", json!({}));
+    assert!(r["edit"]["segments"].as_u64().unwrap() > 0, "{r}");
+    assert_eq!(c.call_ok("project_save", json!({}))["dirty"], false);
+}
+
+/// FFmpeg-backed: cancel a running export; it reaches `cancelled` and
+/// leaves no file (nor its partial file).
+#[test]
+fn cancelled_export_leaves_no_file() {
+    let (root, mut c) = edit_in_temp_root(10);
+    let started = c.call_ok("export_start", json!({"path": "cut.mp4"}));
+    let id = started["id"].as_u64().unwrap();
+    c.call_ok("export_cancel", json!({"id": id}));
+    let status = c.call_ok("export_status", json!({"id": id, "wait_ms": 30_000}));
+    assert_eq!(status["state"], "cancelled", "{status}");
+    assert!(!root.path().join("cut.mp4").exists());
+    assert!(!root.path().join(".cut.mp4.partial").exists());
 }

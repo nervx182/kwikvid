@@ -12,8 +12,9 @@ use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
 use kv_cache::Cache;
+use kv_mcp::tools::export::EncoderBackend;
 use kv_mcp::{KwikvidServer, NoMediaBackend};
-use kv_media::MediaBackend;
+use kv_media::{Encoder, MediaBackend};
 use kv_session::{AudioAnalyzer, JobContext};
 use rmcp::ServiceExt;
 use tracing_subscriber::EnvFilter;
@@ -51,16 +52,24 @@ fn parse_args() -> Result<Args> {
     Ok(Args { root, cache })
 }
 
-/// The real backends (see `real_context` in `crates/kv-app/src/library.rs`).
-/// Without FFmpeg the server still starts; tools that need it say so.
-fn real_context(cache_dir: Option<PathBuf>) -> Result<JobContext> {
-    let media: Arc<dyn MediaBackend> = match kv_media::FfmpegBackend::new() {
-        Ok(b) => Arc::new(b),
-        Err(e) => {
-            tracing::warn!("FFmpeg unavailable, media_add will need duration_us: {e}");
-            Arc::new(NoMediaBackend::new(e.to_string()))
-        }
-    };
+/// The real backends (see `real_context` in `crates/kv-app/src/library.rs`)
+/// and the export encoder (one `FfmpegBackend` for both). Without FFmpeg
+/// the server still starts; tools that need it say so.
+fn real_context(cache_dir: Option<PathBuf>) -> Result<(JobContext, EncoderBackend)> {
+    let (media, encoder): (Arc<dyn MediaBackend>, EncoderBackend) =
+        match kv_media::FfmpegBackend::new() {
+            Ok(b) => {
+                let b = Arc::new(b);
+                (b.clone(), Ok(b as Arc<dyn Encoder>))
+            }
+            Err(e) => {
+                tracing::warn!("FFmpeg unavailable, media_add will need duration_us: {e}");
+                (
+                    Arc::new(NoMediaBackend::new(e.to_string())),
+                    Err(format!("Export is unavailable: {e}")),
+                )
+            }
+        };
     let on_disk = cache_dir.and_then(|dir| {
         std::fs::create_dir_all(&dir)
             .map_err(|e| e.to_string())
@@ -72,11 +81,8 @@ fn real_context(cache_dir: Option<PathBuf>) -> Result<JobContext> {
         Some(c) => c,
         None => Cache::in_memory().context("cannot create an in-memory cache")?,
     };
-    Ok(JobContext::new(
-        media,
-        Arc::new(AudioAnalyzer),
-        Arc::new(cache),
-    ))
+    let ctx = JobContext::new(media, Arc::new(AudioAnalyzer), Arc::new(cache));
+    Ok((ctx, encoder))
 }
 
 #[tokio::main]
@@ -88,10 +94,11 @@ async fn main() -> Result<()> {
         .init();
 
     let args = parse_args()?;
-    let ctx = real_context(args.cache)?;
+    let (ctx, encoder) = real_context(args.cache)?;
     tracing::info!(root = ?args.root, "kwikvid-mcp starting on stdio");
 
     let service = KwikvidServer::new(args.root, ctx)
+        .with_encoder(encoder)
         .serve(rmcp::transport::stdio())
         .await
         .context("MCP initialisation failed")?;
