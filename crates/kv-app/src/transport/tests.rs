@@ -429,3 +429,125 @@ fn real_engine_measures_seeks_and_keeps_playing_through_an_edit() {
     clock.advance(Micros(SEC / 2));
     assert_eq!(t.status().position, Micros(2 * SEC));
 }
+
+#[test]
+fn a_viewer_resize_rebuilds_at_the_new_size_keeping_position_and_play_state() {
+    let (t, built) = fake_transport();
+    let t0 = Instant::now();
+    t.set_viewer_at((960, 540), t0);
+    t.request_sync(project(4), root());
+    t.sync_at(t0);
+    assert_eq!(lock(&built)[0].0.size, (960, 540));
+    t.seek(Micros(2 * SEC));
+    t.play();
+
+    // Enlarging the window (or moving it to a Retina display).
+    t.set_viewer_at((3840, 2160), t0);
+    // Before the debounce: still the old engine, even when an edit syncs.
+    t.request_sync(project(6), root());
+    t.sync_at(t0 + RESIZE_DEBOUNCE / 2);
+    assert_eq!(lock(&built).len(), 1, "no rebuild while debouncing");
+    t.sync_at(t0 + RESIZE_DEBOUNCE);
+    {
+        let b = lock(&built);
+        assert_eq!(b.len(), 2);
+        assert_eq!(b[1].0.size, (1920, 1080));
+        assert_eq!(
+            b[1].1.calls(),
+            vec![
+                Call::SetEdit(Micros(6 * SEC)),
+                Call::Seek(Micros(2 * SEC)),
+                Call::Play
+            ]
+        );
+    }
+    let s = t.status();
+    assert_eq!((s.position, s.playing), (Micros(2 * SEC), true));
+    // Nothing more to do once rebuilt.
+    t.sync_at(t0 + RESIZE_DEBOUNCE * 4);
+    assert_eq!(lock(&built).len(), 2);
+    assert_eq!(t.resize_wait(t0), None);
+}
+
+#[test]
+fn viewer_changes_that_keep_the_preview_size_do_nothing() {
+    let (t, built) = fake_transport();
+    let t0 = Instant::now();
+    t.request_sync(project(4), root());
+    t.sync_at(t0);
+    assert_eq!(
+        lock(&built)[0].0.size,
+        (960, 540),
+        "proxy before the viewer"
+    );
+    // Smaller than the output: still the proxy size.
+    for size in [(800, 450), (1200, 700), (1919, 1079)] {
+        t.set_viewer_at(size, t0);
+        assert_eq!(t.resize_wait(t0), None, "{size:?}");
+    }
+    t.sync_at(t0 + RESIZE_DEBOUNCE * 2);
+    assert_eq!(lock(&built).len(), 1);
+    // A drag that ends where it started cancels the pending resize.
+    t.set_viewer_at((3840, 2160), t0);
+    assert_eq!(t.resize_wait(t0), Some(RESIZE_DEBOUNCE));
+    t.set_viewer_at((960, 540), t0);
+    assert_eq!(t.resize_wait(t0), None);
+    t.sync_at(t0 + RESIZE_DEBOUNCE * 2);
+    assert_eq!(lock(&built).len(), 1);
+    assert_eq!(
+        lock(&built)[0].1.calls(),
+        vec![Call::SetEdit(Micros(4 * SEC))]
+    );
+}
+
+#[test]
+fn resizes_are_debounced_from_the_last_one() {
+    let (t, built) = fake_transport();
+    let t0 = Instant::now();
+    t.request_sync(project(4), root());
+    t.sync_at(t0);
+    // A drag: one report per frame for a while.
+    let mut now = t0;
+    for i in 0..30u32 {
+        now = t0 + Duration::from_millis(16) * i;
+        t.set_viewer_at((1920 + 4 * i, 1080 + 4 * i), now);
+        t.sync_at(now);
+    }
+    assert_eq!(lock(&built).len(), 1, "no rebuild during the drag");
+    assert_eq!(t.resize_wait(now), Some(RESIZE_DEBOUNCE));
+    t.sync_at(now + RESIZE_DEBOUNCE - Duration::from_millis(1));
+    assert_eq!(lock(&built).len(), 1);
+    t.sync_at(now + RESIZE_DEBOUNCE);
+    assert_eq!(lock(&built).len(), 2, "one rebuild after it");
+    assert_eq!(lock(&built)[1].0.size, (1920, 1080));
+}
+
+#[test]
+fn the_worker_rebuilds_once_after_the_resizes_stop() {
+    let (t, built) = fake_transport();
+    let t = Arc::new(t);
+    t.spawn_worker();
+    t.request_sync(project(4), root());
+    let wait_for = |n: usize| {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while lock(&built).len() < n && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        lock(&built).len()
+    };
+    assert_eq!(wait_for(1), 1);
+    let start = Instant::now();
+    t.set_viewer((3000, 1700));
+    std::thread::sleep(RESIZE_DEBOUNCE / 5);
+    t.set_viewer((3840, 2160));
+    let last = Instant::now();
+    assert_eq!(wait_for(2), 2);
+    assert!(
+        last.elapsed() >= RESIZE_DEBOUNCE,
+        "debounced from the last resize"
+    );
+    assert!(start.elapsed() < Duration::from_secs(5));
+    assert_eq!(lock(&built)[1].0.size, (1920, 1080));
+    std::thread::sleep(RESIZE_DEBOUNCE);
+    assert_eq!(lock(&built).len(), 2);
+}

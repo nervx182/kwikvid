@@ -15,6 +15,11 @@
 //!   and the play state (editing while playing keeps playing). It runs off
 //!   the main thread because a new song renders its music bed first. A new
 //!   aspect ratio or media root (another project) builds a new engine.
+//! - **Viewer size**: `set_viewer_rect` reports the viewer's physical size
+//!   ([`Transport::set_viewer`]). When that changes the preview size
+//!   ([`frame_size`]), the engine is rebuilt at the new size, keeping the
+//!   position and play state, [`RESIZE_DEBOUNCE`] after the last such
+//!   report, so a window drag rebuilds once.
 //! - **Seek latency**: the engine's `preview_seek` span records
 //!   `latency_us` (from `seek`, called as the command is received, to the
 //!   target frame being presented). [`seek_latency_layer`] collects it into
@@ -28,7 +33,7 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use kv_core::{AspectRatio, Micros, Project, SectionId};
 use kv_media::{MediaBackend, Rational};
@@ -60,6 +65,9 @@ pub const SEEK_SPAN: &str = "preview_seek";
 const KEEP_LATENCIES: usize = 500;
 /// Log p50/p95 after this many seeks.
 pub const LOG_EVERY: u64 = 20;
+/// Quiet time after the last viewer resize before the engine is rebuilt
+/// at the new preview size (guess).
+pub const RESIZE_DEBOUNCE: Duration = Duration::from_millis(250);
 /// The MVP has one section.
 const SECTION: SectionId = Project::DEFAULT_SECTION;
 
@@ -200,10 +208,15 @@ struct Inner {
     /// The newest project and media root (synced by [`Transport::sync`]).
     latest: Option<(Project, PathBuf)>,
     viewer: (u32, u32),
+    /// When the engine is due to be rebuilt for a new viewer size (set by
+    /// [`Transport::set_viewer`], pushed back by every further resize).
+    resize_due: Option<Instant>,
 }
 
 /// Tauri managed state (as `Arc<Transport>`): the engine and the seek
 /// latency samples.
+///
+/// Lock order: `dirty` before `inner`, never the other way round.
 pub struct Transport {
     inner: Mutex<Inner>,
     dirty: Mutex<bool>,
@@ -251,9 +264,35 @@ impl Transport {
         self.mark_dirty();
     }
 
-    /// The viewer's physical size, used for the next engine's preview size.
+    /// The viewer's physical size. When it changes the running engine's
+    /// preview size, the worker rebuilds the engine [`RESIZE_DEBOUNCE`]
+    /// after the last such call.
     pub fn set_viewer(&self, size: (u32, u32)) {
-        lock(&self.inner).viewer = size;
+        self.set_viewer_at(size, Instant::now());
+    }
+
+    fn set_viewer_at(&self, size: (u32, u32), now: Instant) {
+        {
+            let mut g = lock(&self.inner);
+            g.viewer = size;
+            let resize = g
+                .attached
+                .as_ref()
+                .is_some_and(|a| frame_size(a.spec.aspect, size) != a.spec.size);
+            // Back to the engine's size (mid-drag): nothing to do.
+            g.resize_due = resize.then(|| now + RESIZE_DEBOUNCE);
+        }
+        // Let the worker pick up the new deadline.
+        let _dirty = lock(&self.dirty);
+        self.wake.notify_all();
+    }
+
+    /// Time left until a pending resize is due (zero when overdue), `None`
+    /// when there is none.
+    fn resize_wait(&self, now: Instant) -> Option<Duration> {
+        lock(&self.inner)
+            .resize_due
+            .map(|due| due.saturating_duration_since(now))
     }
 
     /// The project changed: sync the engine on the worker thread.
@@ -268,33 +307,40 @@ impl Transport {
     }
 
     /// Bring the engine in line with the latest project: build one when
-    /// there is none or the aspect ratio or media root changed (keeping
-    /// the position across an aspect change), else `set_edit` when the
-    /// project differs from the last one shown. Blocks while the music bed
-    /// renders; the worker thread calls it.
+    /// there is none, the aspect ratio or media root changed, or a viewer
+    /// resize is due that changes the preview size (keeping the position
+    /// and play state unless the media root changed), else `set_edit` when
+    /// the project differs from the last one shown. Blocks while the music
+    /// bed renders; the worker thread calls it.
     pub fn sync(&self) {
+        self.sync_at(Instant::now());
+    }
+
+    fn sync_at(&self, now: Instant) {
         let mut g = lock(&self.inner);
+        if g.resize_due.is_some_and(|due| now >= due) {
+            g.resize_due = None;
+        }
         let Some((project, root)) = g.latest.clone() else {
             return;
         };
         let aspect = project.settings.aspect_ratio;
+        let size = frame_size(aspect, g.viewer);
+        // While the viewer is still being resized, keep the current size.
+        let size_ok = |a: &Attached| a.spec.size == size || g.resize_due.is_some();
         let (engine, old, carry) = match &g.attached {
-            Some(a) if a.spec.aspect == aspect && a.spec.media_root == root => {
+            Some(a) if a.spec.aspect == aspect && a.spec.media_root == root && size_ok(a) => {
                 if a.edit.as_ref() == Some(&project) {
                     return;
                 }
                 (Arc::clone(&a.engine), None, None)
             }
-            current => {
-                let carry = current
-                    .as_ref()
-                    .filter(|a| a.spec.media_root == root)
-                    .map(|a| a.engine.position());
+            _ => {
                 let Some(factory) = &g.factory else { return };
                 let spec = EngineSpec {
                     aspect,
                     media_root: root,
-                    size: frame_size(aspect, g.viewer),
+                    size,
                 };
                 let engine = match factory(&spec) {
                     Ok(e) => e,
@@ -304,6 +350,14 @@ impl Transport {
                     }
                 };
                 tracing::info!(size = ?spec.size, "preview engine started");
+                // Read last, so the old engine's playhead moved as far as
+                // it will before the new one takes over.
+                let carry = g
+                    .attached
+                    .as_ref()
+                    .filter(|a| a.spec.media_root == spec.media_root)
+                    .map(|a| (a.engine.position(), a.engine.is_playing()));
+                g.resize_due = None;
                 let old = g.attached.replace(Attached {
                     spec,
                     engine: Arc::clone(&engine),
@@ -318,8 +372,11 @@ impl Transport {
         if let Err(e) = engine.set_edit(&project, SECTION) {
             tracing::warn!("preview: cannot show the edit: {e}");
         }
-        if let Some(pos) = carry {
+        if let Some((pos, playing)) = carry {
             engine.seek(pos);
+            if playing {
+                engine.play();
+            }
         }
         if let Some(a) = &mut lock(&self.inner).attached {
             if Arc::ptr_eq(&a.engine, &engine) {
@@ -329,7 +386,8 @@ impl Transport {
     }
 
     /// Runs [`sync`](Self::sync) on its own thread whenever something
-    /// changed, coalescing bursts of edits. For the app's lifetime.
+    /// changed or a viewer resize is due, coalescing bursts of edits. For
+    /// the app's lifetime.
     pub fn spawn_worker(self: &Arc<Self>) {
         let t = Arc::clone(self);
         let spawned = std::thread::Builder::new()
@@ -338,7 +396,16 @@ impl Transport {
                 {
                     let mut dirty = lock(&t.dirty);
                     while !*dirty {
-                        dirty = t.wake.wait(dirty).unwrap_or_else(PoisonError::into_inner);
+                        dirty = match t.resize_wait(Instant::now()) {
+                            Some(left) if left.is_zero() => break,
+                            Some(left) => {
+                                t.wake
+                                    .wait_timeout(dirty, left)
+                                    .unwrap_or_else(PoisonError::into_inner)
+                                    .0
+                            }
+                            None => t.wake.wait(dirty).unwrap_or_else(PoisonError::into_inner),
+                        };
                     }
                     *dirty = false;
                 }
