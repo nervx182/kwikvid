@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use ff::ffi;
 use ffmpeg_next as ff;
 use kv_core::Micros;
-use kv_media::{DecodeOptions, FfmpegBackend, MediaBackend, MediaError, VideoReader};
+use kv_media::{DecodeOptions, FfmpegBackend, HwDecode, MediaBackend, MediaError, VideoReader};
 use kv_testkit::{
     read_frame_tag, render_tagged_frame, rgba_to_yuv420p, tagged_clip, ClipSpec, FrameTag,
 };
@@ -345,8 +345,11 @@ fn rotation_is_applied_before_scaling() {
 /// Encode a 1 s, 25 fps, 320x240 tagged clip as 10-bit HEVC (clip 7).
 /// Returns `None` when `libx265` is unavailable.
 fn write_hevc10(path: &Path) -> Option<usize> {
-    const W: u32 = 320;
-    const H: u32 = 240;
+    write_hevc10_sized(path, 320, 240)
+}
+
+/// [`write_hevc10`] at `w x h` (Main10 profile).
+fn write_hevc10_sized(path: &Path, w: u32, h: u32) -> Option<usize> {
     const FRAMES: usize = 25;
     ff::init().unwrap();
     let codec = ff::encoder::find_by_name("libx265")?;
@@ -360,8 +363,8 @@ fn write_hevc10(path: &Path) -> Option<usize> {
         .encoder()
         .video()
         .unwrap();
-    enc.set_width(W);
-    enc.set_height(H);
+    enc.set_width(w);
+    enc.set_height(h);
     enc.set_format(ff::format::Pixel::YUV420P10LE);
     enc.set_time_base(tb);
     enc.set_frame_rate(Some(ff::Rational::new(25, 1)));
@@ -390,20 +393,20 @@ fn write_hevc10(path: &Path) -> Option<usize> {
             pkt.write_interleaved(octx).unwrap();
         }
     };
-    let mut frame = ff::frame::Video::new(ff::format::Pixel::YUV420P10LE, W, H);
+    let mut frame = ff::frame::Video::new(ff::format::Pixel::YUV420P10LE, w, h);
     for i in 0..FRAMES {
         let rgba = render_tagged_frame(
             FrameTag {
                 clip: 7,
                 frame: i as u16,
             },
-            W,
-            H,
+            w,
+            h,
         );
-        let yuv = rgba_to_yuv420p(&rgba, W, H);
+        let yuv = rgba_to_yuv420p(&rgba, w, h);
         let (cw, ch) = yuv.chroma_size();
         for (plane, src, pw, ph) in [
-            (0, &yuv.y, W as usize, H as usize),
+            (0, &yuv.y, w as usize, h as usize),
             (1, &yuv.u, cw, ch),
             (2, &yuv.v, cw, ch),
         ] {
@@ -458,4 +461,124 @@ fn ten_bit_hevc_decodes_to_rgba8() {
     let f = r.frame_at(Micros(500_000)).unwrap().unwrap();
     assert_eq!((f.width, f.height), (640, 480));
     assert_eq!(tag_of(&f), Some(FrameTag { clip: 7, frame: 12 }));
+}
+
+#[test]
+fn cpu_decode_can_be_forced_and_is_reported() {
+    let path = tagged_clip(&clip_spec());
+    let mut r = backend()
+        .open_video_reader_with(&path, &DecodeOptions::default(), HwDecode::Cpu)
+        .unwrap();
+    assert!(!r.hardware());
+    let f = r.next_frame().unwrap().unwrap();
+    assert_eq!(tag_of(&f), Some(FrameTag { clip: 3, frame: 0 }));
+    assert!(!r.hardware());
+}
+
+/// Off macOS there is no hardware decode: `Auto` decodes on the CPU exactly
+/// as before.
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn no_hardware_decode_outside_macos() {
+    let path = tagged_clip(&clip_spec());
+    let r = backend()
+        .open_video_reader_with(&path, &DecodeOptions::default(), HwDecode::Auto)
+        .unwrap();
+    assert!(!r.hardware());
+}
+
+/// VideoToolbox and CPU decode of the same file give the same frames.
+///
+/// H.264 and HEVC decoding is bit-exact by specification, so both paths see
+/// the same YUV samples; they differ only in the layout handed to swscale
+/// (NV12 / P010 from VideoToolbox, planar yuv420p / yuv420p10le from the
+/// CPU decoder), whose chroma upsampling and rounding take different code
+/// paths. That is at most a level or two on edges, so a mean absolute
+/// difference under 2 per channel (out of 255) accepts it while any real
+/// error (wrong matrix or range, shifted chroma, a wrong or missing frame,
+/// 10-bit samples truncated badly) is far above it.
+///
+/// Runs in `mac-smoke`. When this Mac (for example a virtualised runner)
+/// cannot decode a clip in hardware it says `SKIPPED:`; with
+/// `KV_REQUIRE_VIDEOTOOLBOX=1` that is a failure instead.
+#[cfg(target_os = "macos")]
+#[test]
+fn videotoolbox_decode_matches_cpu_decode() {
+    let require = std::env::var(kv_media::REQUIRE_VIDEOTOOLBOX_ENV).is_ok_and(|v| v == "1");
+    let mut clips = vec![(
+        "h264-1080p",
+        tagged_clip(&ClipSpec {
+            clip: 11,
+            width: 1920,
+            height: 1080,
+            seconds: 1.0,
+            ..ClipSpec::default()
+        }),
+    )];
+    let hevc = out_dir().join("hevc10-1080p-tagged.mp4");
+    match write_hevc10_sized(&hevc, 1920, 1080) {
+        Some(_) => clips.push(("hevc-main10-1080p", hevc)),
+        None => eprintln!("SKIPPED: hevc-main10-1080p: no 10-bit HEVC encoder"),
+    }
+    let mut compared = 0;
+    for (name, path) in clips {
+        let b = backend();
+        let opts = DecodeOptions::default();
+        let mut hw = b
+            .open_video_reader_with(&path, &opts, HwDecode::Auto)
+            .unwrap();
+        if !hw.hardware() {
+            assert!(!require, "{name}: no VideoToolbox decode on this Mac");
+            eprintln!("SKIPPED: {name}: VideoToolbox cannot decode it here");
+            continue;
+        }
+        let mut cpu = b
+            .open_video_reader_with(&path, &opts, HwDecode::Cpu)
+            .unwrap();
+        assert!(!cpu.hardware());
+        let mut n = 0;
+        let mut worst = [0f64; 4];
+        loop {
+            let (h, c) = (hw.next_frame().unwrap(), cpu.next_frame().unwrap());
+            let (h, c) = match (h, c) {
+                (None, None) => break,
+                (Some(h), Some(c)) => (h, c),
+                (h, c) => panic!(
+                    "{name}: frame {n}: hardware {:?}, CPU {:?}",
+                    h.map(|f| f.pts),
+                    c.map(|f| f.pts)
+                ),
+            };
+            assert_eq!(h.pts, c.pts, "{name}: frame {n} pts");
+            assert_eq!(
+                (h.width, h.height),
+                (c.width, c.height),
+                "{name}: frame {n}"
+            );
+            let mut sum = [0u64; 4];
+            for (hp, cp) in h.data.chunks_exact(4).zip(c.data.chunks_exact(4)) {
+                for (s, (x, y)) in sum.iter_mut().zip(hp.iter().zip(cp)) {
+                    *s += u64::from(x.abs_diff(*y));
+                }
+            }
+            let pixels = f64::from(h.width * h.height);
+            for (ch, (s, w)) in sum.iter().zip(worst.iter_mut()).enumerate() {
+                let mad = *s as f64 / pixels;
+                *w = w.max(mad);
+                assert!(
+                    mad < 2.0,
+                    "{name}: frame {n} channel {ch}: mean abs difference {mad:.3}"
+                );
+            }
+            assert_eq!(tag_of(&h), tag_of(&c), "{name}: frame {n} tag");
+            n += 1;
+        }
+        assert!(hw.hardware(), "{name}: stayed on the hardware path");
+        assert!(n > 0);
+        eprintln!("{name}: {n} frames, worst mean abs difference per channel {worst:.3?}");
+        compared += 1;
+    }
+    if compared == 0 {
+        eprintln!("SKIPPED: videotoolbox_decode_matches_cpu_decode: no hardware decode");
+    }
 }
