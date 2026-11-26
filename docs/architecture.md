@@ -46,7 +46,7 @@ CLI, MCP server) that all drive the engine through the same serialisable
 | kv-mcp | MCP server | rmcp |
 | kv-app | Desktop shell and UI | Tauri 2 |
 | kv-session | Desktop session: project + history, jobs, regenerate, save/open, export job; Tauri-free, so the gate unit-tests the app logic without a webview | kv-core, kv-autoedit, kv-render (export, no GPU), serde, tracing |
-| kv-cloud | Camera (Open GoPro) and cloud import, Roadmap I | reqwest |
+| kv-cloud | Camera import over Open GoPro wired USB (HERO9+); GoPro cloud only via GoPro's official Cloud API if access is granted, never undocumented endpoints (ADR 0014). Roadmap I | reqwest (plain HTTP, no TLS) |
 | kv-testkit | Fixture generation, golden files, comparisons, regression corpus access (ADR 0008) | hound, toml, sha2, criterion (benches) |
 
 Beat detection is our own implementation: aubio (GPL) and Essentia (AGPL) may
