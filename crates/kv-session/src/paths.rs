@@ -1,11 +1,16 @@
 //! Pure, lexical path arithmetic between absolute file paths and project
 //! paths (`/`-separated, relative to the media root).
 //!
-//! Nothing here touches the file system: no `canonicalize`, no symlink
-//! resolution. `.` and `..` components are folded lexically. Both Unix and
-//! Windows path syntax are implemented as plain string parsing so that each
-//! is testable on every OS; the public [`Session`](crate::Session) helpers use
-//! the host's [`Style::NATIVE`].
+//! The string functions never touch the file system: `.` and `..`
+//! components are folded lexically. Both Unix and Windows path syntax are
+//! implemented as plain string parsing so that each is testable on every OS.
+//!
+//! The `*_native` helpers behind the public [`Session`](crate::Session)
+//! methods use the host's [`Style::NATIVE`] and add one file system check:
+//! the OS resolves `..` *physically* (after following symlinks), so when the
+//! root is reached through a symlink a lexical `..` can point somewhere else.
+//! When the files exist they verify the lexical answer against the real
+//! (canonical) paths and fall back to arithmetic on those (issue #139).
 
 use crate::SessionError;
 use std::path::{Path, PathBuf};
@@ -172,24 +177,56 @@ pub(crate) fn resolve(root: &str, project_path: &str, style: Style) -> String {
 }
 
 /// [`to_project_path`] for host paths.
+///
+/// The lexical answer is kept when it also holds physically (or the files
+/// cannot be checked). When `root` is reached through a symlink and the
+/// lexical `..` steps would land elsewhere on disk, the path is computed
+/// between the canonical root and file instead, so that it resolves from
+/// `root` both physically and through [`resolve_native`].
 pub(crate) fn to_project_path_native(root: &Path, path: &Path) -> Result<String, SessionError> {
-    let root_str = root
-        .to_str()
-        .ok_or_else(|| SessionError::NonUtf8Path(root.to_owned()))?;
-    let path_str = path
-        .to_str()
-        .ok_or_else(|| SessionError::NonUtf8Path(path.to_owned()))?;
-    to_project_path(root_str, path_str, Style::NATIVE)
+    let lexical = to_project_path(utf8(root)?, utf8(path)?, Style::NATIVE)?;
+    let (Ok(real_root), Ok(real_path)) = (root.canonicalize(), path.canonicalize()) else {
+        return Ok(lexical);
+    };
+    if root.join(&lexical).canonicalize().ok().as_ref() == Some(&real_path) {
+        return Ok(lexical);
+    }
+    match (real_root.to_str(), real_path.to_str()) {
+        (Some(r), Some(p)) => Ok(to_project_path(r, p, Style::NATIVE).unwrap_or(lexical)),
+        _ => Ok(lexical),
+    }
+}
+
+pub(crate) fn utf8(path: &Path) -> Result<&str, SessionError> {
+    path.to_str()
+        .ok_or_else(|| SessionError::NonUtf8Path(path.to_owned()))
 }
 
 /// [`resolve`] for host paths. A non-UTF-8 root (which cannot have produced
 /// any project path) is joined without normalisation.
+///
+/// The lexical answer is kept unless the file the OS finds at
+/// `root/project_path` (resolving `..` physically) is a different one; then
+/// the path is resolved from the canonical root instead.
 pub(crate) fn resolve_native(root: &Path, project_path: &str) -> PathBuf {
-    match root.to_str() {
-        Some(r) => PathBuf::from(resolve(r, project_path, Style::NATIVE)),
-        None => project_path
+    let Some(r) = root.to_str() else {
+        return project_path
             .split('/')
-            .fold(root.to_owned(), |p, c| p.join(c)),
+            .fold(root.to_owned(), |p, c| p.join(c));
+    };
+    let lexical = PathBuf::from(resolve(r, project_path, Style::NATIVE));
+    let joined = project_path
+        .split('/')
+        .fold(root.to_owned(), |p, c| p.join(c));
+    let Ok(physical) = joined.canonicalize() else {
+        return lexical;
+    };
+    if lexical.canonicalize().ok().as_ref() == Some(&physical) {
+        return lexical;
+    }
+    match root.canonicalize().ok().as_ref().and_then(|r| r.to_str()) {
+        Some(real_root) => PathBuf::from(resolve(real_root, project_path, Style::NATIVE)),
+        None => lexical,
     }
 }
 

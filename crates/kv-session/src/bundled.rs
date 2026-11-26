@@ -11,12 +11,12 @@
 //! is on another drive than the project), picking it still works: its
 //! `MusicRef.path` is already the path the copy will have,
 //! `music/<file name>`, and the session resolves that path to the bundled
-//! file until the next save makes the copy. Nothing here touches the file
-//! system.
+//! file until the next save makes the copy. Nothing here writes files
+//! (the copy is made by `project_file.rs`).
 
 use std::path::{Path, PathBuf};
 
-use crate::paths::{self, Style};
+use crate::paths::{self, utf8, Style};
 use crate::{Session, SessionError};
 
 /// The folder, inside the project folder, that saved bundled tracks are
@@ -71,11 +71,6 @@ pub(crate) fn music_path(
     }
 }
 
-fn utf8(path: &Path) -> Result<&str, SessionError> {
-    path.to_str()
-        .ok_or_else(|| SessionError::NonUtf8Path(path.to_owned()))
-}
-
 impl Session {
     /// Tell the session where the app's bundled music folder is (`None`:
     /// no bundled music). Music under it is copied into the project folder
@@ -127,9 +122,15 @@ impl Session {
     }
 
     /// The file name of `path` (absolute) when it is a bundled track.
+    /// Compared lexically, then between canonical paths, so a folder
+    /// reached through a symlink still matches (see `paths.rs`).
     pub(crate) fn bundled_file_name(&self, path: &Path) -> Option<String> {
-        let dir = self.bundled.dir.as_deref()?.to_str()?;
-        file_in(dir, path.to_str()?, Style::NATIVE)
+        let dir = self.bundled.dir.as_deref()?;
+        let lexical = file_in(dir.to_str()?, path.to_str()?, Style::NATIVE);
+        lexical.or_else(|| {
+            let (dir, path) = (dir.canonicalize().ok()?, path.canonicalize().ok()?);
+            file_in(dir.to_str()?, path.to_str()?, Style::NATIVE)
+        })
     }
 }
 
