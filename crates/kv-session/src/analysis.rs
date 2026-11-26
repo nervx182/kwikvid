@@ -41,6 +41,17 @@ impl MusicAnalyzer for AudioAnalyzer {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct MusicAnalyses(HashMap<String, Arc<MusicAnalysis>>);
 
+impl MusicAnalyses {
+    /// Re-key from project paths relative to `from` to ones relative to `to`
+    /// (see [`crate::rebase`]); entries that can't be rebased are dropped.
+    pub(crate) fn rebase(&mut self, from: &Path, to: &Path) {
+        self.0 = std::mem::take(&mut self.0)
+            .into_iter()
+            .filter_map(|(k, v)| crate::rebase(&k, from, to).ok().map(|k| (k, v)))
+            .collect();
+    }
+}
+
 impl Session {
     /// The analysis of a music track, if a finished job delivered one (see
     /// [`Session::handle_job_message`]).
@@ -99,5 +110,39 @@ impl Session {
                 false
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn analysis() -> Arc<MusicAnalysis> {
+        Arc::new(MusicAnalysis {
+            duration: kv_core::Micros(1_000_000),
+            tempo_bpm: 120.0,
+            beats: Vec::new(),
+            downbeats: Vec::new(),
+            onsets: Vec::new(),
+            energy: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn rebase_rekeys_and_drops_what_cannot_be_rebased() {
+        let (home, trip) = if cfg!(windows) {
+            (r"C:\home\ana", r"C:\home\ana\trip")
+        } else {
+            ("/home/ana", "/home/ana/trip")
+        };
+        let a = analysis();
+        let mut m = MusicAnalyses(HashMap::from([("music/s.mp3".to_string(), a.clone())]));
+        m.rebase(Path::new(home), Path::new(trip));
+        assert_eq!(m.0.keys().collect::<Vec<_>>(), ["../music/s.mp3"]);
+        assert!(Arc::ptr_eq(&m.0["../music/s.mp3"], &a));
+
+        // A relative root can't be resolved, so the entry is dropped.
+        m.rebase(Path::new("relative"), Path::new(trip));
+        assert!(m.0.is_empty());
     }
 }
