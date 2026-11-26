@@ -10,6 +10,7 @@ use kv_core::{Command, SectionId};
 use kv_session::regen::{RegenError, RegenSnapshot};
 use kv_session::{Session, SessionError, Snapshot};
 use serde::Serialize;
+use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 
 /// The event the backend emits with the new [`Snapshot`] after every change.
@@ -18,21 +19,38 @@ pub const STATE_EVENT: &str = "kv://state";
 /// Tauri managed state: the window's one session.
 pub struct AppState {
     session: Mutex<Session>,
+    /// The app's bundled music folder, given to every session (see
+    /// [`Session::set_bundled_music_dir`]).
+    bundled_music: Option<PathBuf>,
 }
 
 impl AppState {
     pub fn new(session: Session) -> AppState {
         AppState {
             session: Mutex::new(session),
+            bundled_music: None,
         }
+    }
+
+    /// Give every session, including ones that later replace it (New,
+    /// Open), the bundled music folder `dir`, so saving copies bundled
+    /// tracks into the project folder.
+    pub fn with_bundled_music(mut self, dir: Option<PathBuf>) -> AppState {
+        self.bundled_music = dir;
+        self
     }
 
     pub(crate) fn session(&self) -> Result<MutexGuard<'_, Session>, IpcError> {
         // A panic while the lock was held may have left the session half
         // changed, so refuse to keep working on it rather than recover.
-        self.session.lock().map_err(|_| IpcError {
+        let mut session = self.session.lock().map_err(|_| IpcError {
             message: "kwikvid hit an internal error. Please restart it.".into(),
-        })
+        })?;
+        // A session replaced since the last lock starts without it.
+        if session.bundled_music_dir() != self.bundled_music.as_deref() {
+            session.set_bundled_music_dir(self.bundled_music.clone());
+        }
+        Ok(session)
     }
 }
 

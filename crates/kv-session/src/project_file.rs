@@ -14,6 +14,7 @@ use crate::paths;
 use crate::{Job, Session, SessionError, Snapshot};
 use kv_core::{FormatVersion, History, MediaId, Project, SectionId};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Write};
@@ -116,24 +117,29 @@ impl Session {
     /// folder, and the project is marked saved. The revision is bumped
     /// because the project's paths and media root changed.
     ///
+    /// Bundled music (a file under [`Session::bundled_music_dir`]) is
+    /// copied into the project's [`MUSIC_DIR`](crate::MUSIC_DIR) folder,
+    /// as `music/<file name>`, and its path points at the copy, so the
+    /// project no longer depends on where the app is installed. A file of
+    /// that name with the same contents is reused; one with other contents
+    /// is kept and the copy gets a numbered name (`arpent-2.mp3`).
+    ///
     /// The rebase is **not** an undoable command: it is not an edit (every
-    /// path still points at the same file), so there is nothing to undo.
-    /// Instead the whole history (every undo and redo state) is rebased with
-    /// it, so undo and redo keep working against the new media root.
+    /// path still points at the same file, or a copy of it), so there is
+    /// nothing to undo. Instead the whole history (every undo and redo
+    /// state) is rebased with it, so undo and redo keep working against the
+    /// new media root.
     ///
     /// On error nothing changes and no file is left behind.
     pub fn save_as(&mut self, path: &Path) -> Result<Snapshot, ProjectFileError> {
         let file = with_project_extension(absolute(path)?);
         let dir = parent_dir(&file)?;
-        let mut history: History = self.history.clone();
-        history.try_map_paths(|p| rebase(p, &self.media_root, &dir))?;
-        write_json_atomic(&file, history.project())?;
+        let plan = self.plan_save(&dir)?;
+        write_project(&file, &plan)?;
 
-        tracing::info!(file = %file.display(), "project saved as");
+        tracing::info!(file = %file.display(), copied = plan.copies.len(), "project saved as");
         self.thumbnails.rebase(&self.media_root, &dir);
-        self.music.rebase(&self.media_root, &dir);
-        self.saved = history.project().clone();
-        self.history = history;
+        self.finish_save(plan, &dir);
         self.media_root = dir;
         self.file = Some(file);
         self.revision += 1;
@@ -142,13 +148,77 @@ impl Session {
 
     /// Write the project to its current file and mark it saved.
     /// [`ProjectFileError::Untitled`] when it has no file yet (use
-    /// [`Session::save_as`]). The revision is unchanged.
+    /// [`Session::save_as`]). Bundled music is copied into the project
+    /// folder as in [`Session::save_as`]; the revision is bumped only when
+    /// that changed a path. A second save copies nothing.
     pub fn save(&mut self) -> Result<Snapshot, ProjectFileError> {
         let file = self.file.clone().ok_or(ProjectFileError::Untitled)?;
-        write_json_atomic(&file, self.history.project())?;
-        tracing::info!(file = %file.display(), "project saved");
-        self.mark_saved();
+        let dir = self.media_root.clone();
+        let plan = self.plan_save(&dir)?;
+        write_project(&file, &plan)?;
+        tracing::info!(file = %file.display(), copied = plan.copies.len(), "project saved");
+        if plan.changed {
+            self.revision += 1;
+        }
+        self.finish_save(plan, &dir);
         Ok(self.snapshot())
+    }
+
+    /// The history as it will be saved in the folder `dir`, and the
+    /// bundled music to copy there. Reads the existing files in `dir`'s
+    /// music folder; writes nothing.
+    fn plan_save(&self, dir: &Path) -> Result<SavePlan, ProjectFileError> {
+        let mut history: History = self.history.clone();
+        let mut renamed: HashMap<String, String> = HashMap::new();
+        let mut targets: HashMap<PathBuf, String> = HashMap::new();
+        let mut copies: Vec<(PathBuf, PathBuf)> = Vec::new();
+        let mut changed = false;
+        history.try_map_paths(|p| -> Result<String, ProjectFileError> {
+            if let Some(new) = renamed.get(p) {
+                return Ok(new.clone());
+            }
+            let source = self.resolve(p);
+            let new = match self.bundled_file_name(&source) {
+                None => rebase(p, &self.media_root, dir)?,
+                Some(name) => {
+                    changed = true;
+                    match targets.get(&source) {
+                        Some(t) => t.clone(),
+                        None => {
+                            let (target, copy) = copy_target(&source, &name, dir, &targets)?;
+                            if copy {
+                                copies.push((source.clone(), paths::resolve_native(dir, &target)));
+                            }
+                            targets.insert(source, target.clone());
+                            target
+                        }
+                    }
+                }
+            };
+            renamed.insert(p.to_owned(), new.clone());
+            Ok(new)
+        })?;
+        Ok(SavePlan {
+            history,
+            renamed,
+            copies,
+            changed,
+        })
+    }
+
+    /// Adopt a written [`SavePlan`] whose paths are relative to `dir`.
+    fn finish_save(&mut self, plan: SavePlan, dir: &Path) {
+        let from = self.media_root.clone();
+        let renamed = plan.renamed;
+        self.music.remap(|k| {
+            renamed
+                .get(k)
+                .cloned()
+                .or_else(|| rebase(k, &from, dir).ok())
+        });
+        self.bundled.pending.clear();
+        self.history = plan.history;
+        self.saved = self.history.project().clone();
     }
 
     /// Open a project file. The media root is the file's folder. Returns the
@@ -170,6 +240,7 @@ impl Session {
             file: Some(file),
             music: Default::default(),
             thumbnails: Default::default(),
+            bundled: Default::default(),
         };
         let missing = session.missing_files();
         tracing::info!(
@@ -373,12 +444,115 @@ fn parent_dir(file: &Path) -> Result<PathBuf, ProjectFileError> {
     }
 }
 
-/// Write `value` as pretty JSON to `path` atomically: to a temporary file in
-/// the same folder, flushed to disk, then renamed over `path`. On error the
-/// temporary file is removed and `path` is untouched.
-fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), ProjectFileError> {
-    let mut json = serde_json::to_vec_pretty(value).map_err(ProjectFileError::Encode)?;
-    json.push(b'\n');
+/// A save worked out by [`Session::plan_save`].
+struct SavePlan {
+    /// The history with every path relative to the new project folder.
+    history: History,
+    /// Old project path to new, for every path in the history.
+    renamed: HashMap<String, String>,
+    /// Bundled files to copy: (bundled file, destination).
+    copies: Vec<(PathBuf, PathBuf)>,
+    /// Some bundled music was (or is about to be) moved to a copy.
+    changed: bool,
+}
+
+/// Where the bundled file `source` named `name` goes in the project folder
+/// `dir`: the first of `music/<name>`, `music/<stem>-2.<ext>`, ... that no
+/// other planned copy (`taken`) uses and that is free or already holds the
+/// same contents. Returns the project path and whether it must be copied.
+fn copy_target(
+    source: &Path,
+    name: &str,
+    dir: &Path,
+    taken: &HashMap<PathBuf, String>,
+) -> Result<(String, bool), ProjectFileError> {
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() => (stem, Some(ext)),
+        _ => (name, None),
+    };
+    for n in 1.. {
+        let candidate = match (n, ext) {
+            (1, _) => name.to_owned(),
+            (n, Some(ext)) => format!("{stem}-{n}.{ext}"),
+            (n, None) => format!("{stem}-{n}"),
+        };
+        let target = format!("{}/{candidate}", crate::MUSIC_DIR);
+        if taken.values().any(|t| *t == target) {
+            continue;
+        }
+        let dest = paths::resolve_native(dir, &target);
+        match fs::symlink_metadata(&dest) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok((target, true)),
+            Err(source) => return Err(ProjectFileError::Io { path: dest, source }),
+            Ok(_) if same_contents(source, &dest)? => return Ok((target, false)),
+            Ok(_) => {}
+        }
+    }
+    unreachable!("an unbounded range always yields a free name")
+}
+
+/// Whether the files `a` and `b` have the same bytes.
+fn same_contents(a: &Path, b: &Path) -> Result<bool, ProjectFileError> {
+    let read = |p: &Path| {
+        fs::read(p).map_err(|source| ProjectFileError::Io {
+            path: p.to_owned(),
+            source,
+        })
+    };
+    let (ma, mb) = (fs::metadata(a), fs::metadata(b));
+    if let (Ok(ma), Ok(mb)) = (&ma, &mb) {
+        if !mb.is_file() || ma.len() != mb.len() {
+            return Ok(false);
+        }
+    }
+    Ok(read(a)? == read(b)?)
+}
+
+/// Copy the plan's bundled files, then write its project to `file`. On
+/// error, the copies made so far are removed and `file` is untouched.
+fn write_project(file: &Path, plan: &SavePlan) -> Result<(), ProjectFileError> {
+    let mut made: Vec<&Path> = Vec::new();
+    let result = (|| {
+        for (source, dest) in &plan.copies {
+            copy_atomic(source, dest)?;
+            made.push(dest);
+        }
+        write_json_atomic(file, plan.history.project())
+    })();
+    if result.is_err() {
+        for dest in made {
+            // Best effort: the project file still points at the bundled file.
+            let _ = fs::remove_file(dest);
+        }
+    }
+    result
+}
+
+/// Copy `source` to `dest` (creating its folder) through a temporary file
+/// in the same folder, so `dest` is never half written.
+fn copy_atomic(source: &Path, dest: &Path) -> Result<(), ProjectFileError> {
+    let dir = parent_dir(dest)?;
+    let io_err = |path: &Path| {
+        let path = path.to_owned();
+        move |source| ProjectFileError::Io { path, source }
+    };
+    fs::create_dir_all(&dir).map_err(io_err(&dir))?;
+    let tmp = temp_path(dest)?;
+    let copy = || -> io::Result<()> {
+        fs::copy(source, &tmp)?;
+        fs::File::open(&tmp)?.sync_all()?;
+        fs::rename(&tmp, dest)
+    };
+    copy().map_err(|e| {
+        let _ = fs::remove_file(&tmp);
+        io_err(dest)(e)
+    })?;
+    tracing::info!(from = %source.display(), to = %dest.display(), "bundled music copied");
+    Ok(())
+}
+
+/// The hidden temporary file next to `path` that an atomic write uses.
+fn temp_path(path: &Path) -> Result<PathBuf, ProjectFileError> {
     let dir = parent_dir(path)?;
     let name = path
         .file_name()
@@ -386,7 +560,16 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), Project
     let mut tmp_name = OsString::from(".");
     tmp_name.push(name);
     tmp_name.push(format!(".{}.tmp", std::process::id()));
-    let tmp = dir.join(tmp_name);
+    Ok(dir.join(tmp_name))
+}
+
+/// Write `value` as pretty JSON to `path` atomically: to a temporary file in
+/// the same folder, flushed to disk, then renamed over `path`. On error the
+/// temporary file is removed and `path` is untouched.
+fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), ProjectFileError> {
+    let mut json = serde_json::to_vec_pretty(value).map_err(ProjectFileError::Encode)?;
+    json.push(b'\n');
+    let tmp = temp_path(path)?;
 
     let write = || -> io::Result<()> {
         let mut f = fs::File::create(&tmp)?;
@@ -444,6 +627,42 @@ mod tests {
             rebase("a.mp4", Path::new(r"C:\p"), Path::new(r"D:\q")),
             Err(SessionError::OtherVolume(_))
         ));
+    }
+
+    /// A bundled track picked from another drive (simulated: the pending
+    /// entry `music_project_path` makes on Windows) resolves to the bundled
+    /// file until saved, and the save copies it.
+    #[test]
+    fn pending_bundled_track_is_copied_on_save() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bundled = tmp.path().join("app").join("music");
+        fs::create_dir_all(&bundled).unwrap();
+        let track = bundled.join("arpent.mp3");
+        fs::write(&track, b"audio").unwrap();
+        let project = tmp.path().join("p");
+        fs::create_dir_all(&project).unwrap();
+
+        let mut s = Session::new(project.clone());
+        s.set_bundled_music_dir(Some(bundled));
+        s.bundled
+            .pending
+            .push(("music/arpent.mp3".into(), track.clone()));
+        s.apply(kv_core::Command::SetMusic {
+            section: Project::DEFAULT_SECTION,
+            music: Some(kv_core::MusicRef {
+                path: "music/arpent.mp3".into(),
+                duration: kv_core::Micros(1),
+            }),
+        })
+        .unwrap();
+        assert_eq!(s.resolve("music/arpent.mp3"), track);
+        assert_eq!(s.missing_files(), []);
+
+        s.save_as(&project.join("p.kwikvid")).unwrap();
+        let copy = project.join("music").join("arpent.mp3");
+        assert_eq!(fs::read(&copy).unwrap(), b"audio");
+        assert_eq!(s.resolve("music/arpent.mp3"), copy);
+        assert!(s.bundled.pending.is_empty());
     }
 
     #[test]
