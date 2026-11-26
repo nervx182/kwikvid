@@ -307,7 +307,7 @@ fn autoedit_fixtures() -> Vec<(&'static str, String)> {
 }
 
 /// - `styles-smooth`: `autoedit-ready` with the Smooth preset chosen
-///   (`SetStyle`, applied with a regenerate).
+///   (`SetStyle`, applied with a regenerate), so its edit has crossfades.
 /// - `styles-titled`: `styles-smooth` with the title "Lake day" for 3 s.
 fn styles_fixtures() -> Vec<(&'static str, String)> {
     let (music, analysis) = long_song();
@@ -331,6 +331,14 @@ fn styles_fixtures() -> Vec<(&'static str, String)> {
         )
         .expect("smooth");
     assert!(smooth.regen_error.is_none(), "{:?}", smooth.regen_error);
+    assert!(
+        s.project().sections[0]
+            .edit
+            .segments
+            .iter()
+            .any(|g| matches!(g.transition, Transition::Crossfade { .. })),
+        "Smooth gives crossfades"
+    );
     let titled = s
         .apply_and_regenerate(
             Command::SetTitleCard {

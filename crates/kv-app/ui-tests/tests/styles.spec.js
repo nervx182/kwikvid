@@ -14,12 +14,18 @@ function newer(s, revision) {
   return { ...structuredClone(s), revision };
 }
 
+/** The crossfaded segments of `s`'s first section. */
+const fades = (s) => s.project.sections[0].edit.segments.filter((g) => g.transition.type === "crossfade");
+
 const applied = async (mock) => (await mock.commands("apply")).map((c) => c.args.cmd);
 
 test("the fixtures say what the tests assume", () => {
   expect(ready.project.sections[0].style).toBe("cut");
   expect(ready.project.sections[0].title).toBeNull();
   expect(smooth.project.sections[0].style).toBe("smooth");
+  // The Smooth edit is the styled auto-edit: crossfades, unlike Cut.
+  expect(fades(ready)).toHaveLength(0);
+  expect(fades(smooth).length).toBeGreaterThan(0);
   expect(smooth.project.sections[0].title).toBeNull();
   expect(titled.project.sections[0].title).toEqual({ text: "Lake day", duration: 3 * SEC });
 });
@@ -202,6 +208,14 @@ test("no title, no overlay; clearing the title hides it", async ({ page, mock })
   await expect(page.getByTestId("title-overlay")).toBeVisible();
   await mock.state(newer(smooth, titled.revision + 2));
   await expect(page.getByTestId("title-overlay")).toBeHidden();
+});
+
+test("a Smooth edit shows its crossfades on the timeline", async ({ page, mock }) => {
+  await mock.open(ready);
+  await expect(page.locator(".tl-xfade")).toHaveCount(0);
+  await mock.respond("apply", smooth);
+  await page.getByTestId("style-smooth").click();
+  await expect(page.locator(".tl-xfade")).toHaveCount(fades(smooth).length);
 });
 
 test("a new project shows Cut and an empty title", async ({ page, mock }) => {
