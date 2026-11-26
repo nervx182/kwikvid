@@ -269,10 +269,12 @@ pub fn start_test_pattern(mut sink: WebGlSink, aspect: AspectRatio) {
             tracing::info!(width = w, height = h, "webgl preview test pattern running");
             let mut frame = VideoFrame::solid(Micros(0), w, h, [0, 0, 0, 255]);
             let period = Duration::from_micros(1_000_000 / TEST_PATTERN_FPS as u64);
-            for n in 0.. {
+            let mut n: u64 = 0;
+            loop {
                 render_test_pattern(n, &mut frame);
                 sink.present(&RenderedFrame::Cpu(&frame));
                 std::thread::sleep(period);
+                n = n.wrapping_add(1);
             }
         });
     if let Err(e) = spawned {
