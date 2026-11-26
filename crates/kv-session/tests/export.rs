@@ -90,8 +90,10 @@ fn backend() -> Arc<FfmpegBackend> {
 #[test]
 fn export_job_writes_a_portrait_file_of_both_clips() {
     let dir = tempfile::tempdir().unwrap();
-    let s = session(dir.path(), 1.0);
-    let out = dir.path().join("Trip.mp4");
+    // Canonical, so the relative clip paths survive macOS's /var -> /private/var link.
+    let root = dir.path().canonicalize().unwrap();
+    let s = session(&root, 1.0);
+    let out = root.join("Trip.mp4");
     let ff = backend();
     let (tx, rx) = mpsc::channel();
     let job = ExportJob::start(input(&s, &out), ff.clone(), ff.clone(), move |e| {
@@ -136,8 +138,9 @@ fn export_job_writes_a_portrait_file_of_both_clips() {
 #[test]
 fn cancel_mid_way_leaves_no_file() {
     let dir = tempfile::tempdir().unwrap();
-    let s = session(dir.path(), 2.0);
-    let out = dir.path().join("Cancelled.mp4");
+    let root = dir.path().canonicalize().unwrap();
+    let s = session(&root, 2.0);
+    let out = root.join("Cancelled.mp4");
     let ff = backend();
     let (tx, rx) = mpsc::channel();
     let (ack_tx, ack_rx) = mpsc::channel::<()>();
