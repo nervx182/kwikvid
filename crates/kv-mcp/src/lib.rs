@@ -47,7 +47,12 @@ pub const PROJECT_URI: &str = "project://current";
 /// The server `instructions`: every tool, one line of when to use it.
 pub const INSTRUCTIONS: &str = "kwikvid video editor. Tools: \
     project_state (read the project), \
-    media_add / media_remove (library), \
+    media_add / media_import / media_remove (library: one file, or files and folders \
+    with GoPro chapters grouped; import does not rebuild the edit), \
+    music_set / music_clear (a section's song; music_set analyses it first and returns \
+    tempo_bpm and beat count), music_beats (beat and downbeat times of the song), \
+    edit_set_target_length (seconds, or full_song: true), \
+    edit_regenerate / edit_reroll (rebuild the edit, or pick the next seed for a different one), \
     edit_pin_range / edit_unpin_range (force a moment into the edit, or stop forcing it), \
     edit_exclude_range / edit_unexclude_range (keep a moment out, or allow it again), \
     edit_undo / edit_redo, \
@@ -60,7 +65,8 @@ pub const INSTRUCTIONS: &str = "kwikvid video editor. Tools: \
     Write tools rebuild the auto-edit when the project has music and its analysis, \
     and return revision, can_undo, can_redo, dirty, manual_edits_replaced, \
     regen_error and an edit summary. The project://current resource holds the \
-    same JSON as project_state. All times are integer microseconds.";
+    same JSON as project_state. All times are integer microseconds, except \
+    edit_set_target_length seconds.";
 
 /// The MCP server: one session (project, undo history, media root) and the
 /// backends its tools use.
@@ -91,6 +97,7 @@ impl KwikvidServer {
             tool_router: Self::project_router()
                 + Self::media_router()
                 + Self::edit_router()
+                + Self::music_router()
                 + Self::style_router(),
         }
     }
@@ -328,7 +335,7 @@ mod tests {
         let server = server();
         let readme = include_str!("../README.md");
         let tools = server.tool_router.list_all();
-        assert_eq!(tools.len(), 18, "{tools:?}");
+        assert_eq!(tools.len(), 25, "{tools:?}");
         for tool in tools {
             assert!(INSTRUCTIONS.contains(&*tool.name), "{} missing", tool.name);
             assert!(

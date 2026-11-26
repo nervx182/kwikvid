@@ -13,6 +13,7 @@ reverts the command together with the rebuild it caused.
 | --- | --- | --- |
 | `project_state` | `Session::snapshot` (read) | none |
 | `media_add` | `AddMedia` | `path`, optional `duration_us` (skips probing), `kind`, `hilights_us` |
+| `media_import` | `Session::import` (one undo step; GoPro chapters grouped; no rebuild) | `paths` (files and folders) |
 | `media_remove` | `RemoveMedia` (drops its pins, excludes and cuts) | `media_id` |
 | `edit_pin_range` | `PinRange` | `media_id`, `start_us`, `end_us`, optional `section` |
 | `edit_unpin_range` | `UnpinRange` | same as `edit_pin_range` (must equal a pin) |
@@ -20,6 +21,12 @@ reverts the command together with the rebuild it caused.
 | `edit_unexclude_range` | `UnexcludeRange` | same as `edit_pin_range` (must equal an exclude) |
 | `edit_undo` | `Session::undo` | none |
 | `edit_redo` | `Session::redo` | none |
+| `music_set` | `Job::AnalyzeMusic` (cached), then `SetMusic` | `path`, optional `section` |
+| `music_clear` | `SetMusic` with no music | optional `section` |
+| `music_beats` | the section's music analysis (read) | optional `section` |
+| `edit_set_target_length` | `SetTargetLength` (`Fixed` or `FullSong`) | exactly one of `seconds` or `full_song: true`, optional `section` |
+| `edit_regenerate` | `Session::regenerate` | optional `section` |
+| `edit_reroll` | `Session::reroll` (next seed) | optional `section` |
 | `edit_move_segment` | `MoveSegment` (tweak, no rebuild) | `from`, `to` (segment indices from 0), optional `section` |
 | `edit_nudge_cut` | `Session::nudge_cut` → `MoveCut` (tweak, no rebuild) | `cut` (1..segments), `beats` (negative: earlier; 0 snaps to the nearest beat), optional `section` |
 | `edit_move_cut` | `MoveCut` (tweak, no rebuild) | `cut`, `to_us` (timeline time, off the beat grid if need be), optional `section` |
@@ -59,11 +66,26 @@ Every write tool (including `edit_undo` / `edit_redo`) returns:
   total timeline length in microseconds.
 - `media_id`: only from `media_add`, the new item's id.
 
+Some tools add keys to the write result:
+
+- `media_import`: `added` (new media ids, one per recording) and `skipped`
+  (`[{"path": ..., "reason": ...}]`). Import does not rebuild the edit (as in
+  the app); call `edit_regenerate` afterwards when music is set.
+- `music_set`: `tempo_bpm`, `beats` (count) and `duration_us` of the analysed
+  song. The song is analysed before the call returns; a song that cannot be
+  analysed is an error and changes nothing.
+
+`music_beats` returns `{"path", "tempo_bpm", "duration_us", "beats_us",
+"downbeats_us"}`. `edit_regenerate` and `edit_reroll` return an error with
+the user-facing reason ("Add music to create an edit.", "Pinned moments are
+longer than the target length.", ...) when the edit cannot be built.
+
 A rejected command (unknown media, overlapping ranges, nothing to undo, a path
 outside the root, ...) is a tool result with `isError: true` and a short
 message; the project is unchanged.
 
-All times are integer microseconds. Media paths are relative to `--root <dir>`
+All times are integer microseconds, except `seconds` of
+`edit_set_target_length`. Media paths are relative to `--root <dir>`
 (default: the working directory), or absolute inside it; the server refuses
 paths outside it. Without `duration_us`, `media_add` probes the file with
 FFmpeg (see `kv-media`); when FFmpeg cannot be loaded the server still starts

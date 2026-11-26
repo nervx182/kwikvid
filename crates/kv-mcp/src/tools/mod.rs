@@ -3,9 +3,10 @@
 //! [`KwikvidServer::new`] adds the routers together.
 //!
 //! - [`project`] - `project_state`.
-//! - [`media`] - `media_add`, `media_remove`.
+//! - [`media`] - `media_add`, `media_import`, `media_remove`.
 //! - [`edit`] - pin, exclude and their inverses, undo, redo; tweaks: move
 //!   segment, nudge or move a cut, clip audio, music volume.
+//! - [`music`] - music set/clear/beats, target length, regenerate, re-roll.
 //! - [`style`] - style preset, aspect ratio, title card.
 //!
 //! Shared helpers (result shapes, errors, path handling) live here.
@@ -23,6 +24,7 @@ use crate::KwikvidServer;
 
 pub mod edit;
 pub mod media;
+pub mod music;
 pub mod project;
 pub mod style;
 
