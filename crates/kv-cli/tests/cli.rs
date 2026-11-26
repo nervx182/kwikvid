@@ -508,7 +508,14 @@ fn render_refuses_to_replace_without_overwrite() {
     .success()
     .get_output()
     .clone();
-    assert!(out.stderr.is_empty(), "--quiet prints nothing");
+    // On a virtualised Mac (the CI runner) VideoToolbox's decoder setup
+    // prints this line itself; it is the OS framework's, not kwikvid's.
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let ours: Vec<&str> = stderr
+        .lines()
+        .filter(|l| !l.starts_with("IOServiceMatchingfailed for: AppleM2ScalerParavirtDriver"))
+        .collect();
+    assert!(ours.is_empty(), "--quiet prints nothing, got: {stderr}");
     let info = FfmpegBackend::new()
         .unwrap()
         .probe(&dir.path().join("out.mp4"))

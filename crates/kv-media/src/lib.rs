@@ -28,7 +28,7 @@ pub use ffmpeg::FfmpegBackend;
 mod ffmpeg_encode;
 pub use chaptered::{open_item_video, Chapter, ChapteredReader};
 #[cfg(feature = "ffmpeg")]
-pub use ffmpeg_decode::FfmpegVideoReader;
+pub use ffmpeg_decode::{FfmpegVideoReader, HwDecode, HWDECODE_ENV};
 #[cfg(feature = "ffmpeg")]
 pub use ffmpeg_encode::REQUIRE_VIDEOTOOLBOX_ENV;
 pub use filmstrip::{encode_jpeg, filmstrip, filmstrip_size, FILMSTRIP_KEYFRAME_SNAP};
