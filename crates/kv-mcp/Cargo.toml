@@ -30,6 +30,10 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["f
 [dev-dependencies]
 # MusicAnalysis values for the regenerate tests.
 kv-audio = { path = "../kv-audio" }
+# Real files for the cache keys in the import and music tests.
+tempfile = "3"
+# `video`: tagged MP4 clips and a click track for the FFmpeg-backed test.
+kv-testkit = { path = "../kv-testkit", features = ["video"] }
 
 [lints]
 workspace = true
