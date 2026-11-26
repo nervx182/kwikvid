@@ -18,6 +18,16 @@
 //!    is rasterised once at the output size ([`title::rasterize`]) and
 //!    alpha-blended over the frames the plan gives it an overlay on
 //!    ([`overlay()`]).
+//!
+//!    Decoding runs ahead on its own thread (`kv-export-decode`): it walks
+//!    the same plan, owns the readers (the LRU and the reuse above move with
+//!    it) and sends each output frame's decoded layers into a bounded
+//!    channel, at most [`DECODE_AHEAD`] frames ahead, while the calling
+//!    thread composites and encodes. The encoder gets exactly the frames
+//!    and audio a serial export gives it. When the export stops (finished,
+//!    failed or cancelled) the receiver is dropped, so the decode thread
+//!    wakes from a full channel and ends; its decode errors reach the
+//!    export loop in frame order.
 //! 3. After each video frame, write the audio samples up to that frame's end
 //!    so audio and video stay interleaved for the muxer. The audio is the
 //!    music bed with the clip audio of every media item that has it on
@@ -29,6 +39,7 @@
 
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{sync_channel, SyncSender};
 use std::time::{Duration, Instant};
 
 use kv_audio::{
@@ -52,6 +63,12 @@ pub const MAX_OPEN_READERS: usize = 4;
 /// Decoded frames kept per open reader, by requested source time: the two
 /// frames of a slow-mo blend, so the next output frame reuses them.
 const FRAMES_KEPT: usize = 2;
+
+/// Output frames decoded ahead of the compositor, on the decode thread
+/// (the bounded channel's capacity; one more may be in flight). Each holds
+/// its layers' frames at [`source_size_for`] the output: at 1080p RGBA and
+/// two layers about 16 MB, so 8 is at most ~130 MB.
+pub const DECODE_AHEAD: usize = 8;
 
 /// Fade-out at the end of the music bed: [`kv_audio::DEFAULT_FADE_OUT`]
 /// (1 s, guess).
@@ -160,6 +177,36 @@ pub fn export(
     settings: &ExportSettings,
     progress: &mut dyn FnMut(Progress) -> ControlFlow<()>,
 ) -> Result<ExportReport, RenderError> {
+    export_with_lookahead(
+        project,
+        section,
+        media_root,
+        media,
+        encoder,
+        out,
+        settings,
+        progress,
+        DECODE_AHEAD,
+    )
+}
+
+/// [`export`] decoding up to `lookahead` frames ahead on a worker thread;
+/// `0` decodes each frame on the calling thread right before compositing it
+/// (the serial export). The output is the same either way; this exists for
+/// tests that check that.
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub fn export_with_lookahead(
+    project: &Project,
+    section: SectionId,
+    media_root: &Path,
+    media: &dyn MediaBackend,
+    encoder: &dyn Encoder,
+    out: &Path,
+    settings: &ExportSettings,
+    progress: &mut dyn FnMut(Progress) -> ControlFlow<()>,
+    lookahead: usize,
+) -> Result<ExportReport, RenderError> {
     let started = Instant::now();
     let sec = project
         .section(section)
@@ -243,14 +290,33 @@ pub fn export(
     let audio = mix_clip_audio(project, edl, &sources, audio, duration)?.samples;
 
     let writer = encoder.create(out, settings)?;
-    let mut job = Job {
-        sources: &sources,
-        media,
-        readers: Vec::new(),
-        settings,
-        title,
+    let job = Job { settings, title };
+    let written = if lookahead == 0 {
+        let mut decoder = Decoder::new(&sources, media);
+        job.write_all(writer, &frame_plan, &audio, progress, &mut |f| {
+            decoder.decode(f)
+        })
+        // The readers close here, before the partial file is removed.
+    } else {
+        std::thread::scope(|scope| {
+            let (tx, rx) = sync_channel(lookahead);
+            let decoder = Decoder::new(&sources, media);
+            let fps = settings.fps;
+            std::thread::Builder::new()
+                .name("kv-export-decode".into())
+                .spawn_scoped(scope, move || decoder.run(edl, fps, &tx))
+                .expect("spawn the export decode thread");
+            // `rx` is dropped when this closure returns (finished, failed or
+            // cancelled), so a decode thread blocked on a full channel wakes
+            // with a send error and stops; the scope then joins it, which
+            // closes its readers.
+            job.write_all(writer, &frame_plan, &audio, progress, &mut |_| {
+                rx.recv()
+                    .expect("the decode thread sends every frame or an error")
+            })
+        })
     };
-    match job.write_all(writer, &frame_plan, &audio, progress) {
+    match written {
         Ok(encoder_name) => Ok(ExportReport {
             frames: frame_plan.len(),
             duration,
@@ -258,9 +324,8 @@ pub fn export(
             elapsed: started.elapsed(),
         }),
         Err(e) => {
-            // Close the readers and the writer first, then drop the partial
-            // file; failing to remove it is not worth masking `e`.
-            drop(job);
+            // The writer and the readers are closed; drop the partial file.
+            // Failing to remove it is not worth masking `e`.
             let _ = std::fs::remove_file(out);
             Err(e)
         }
@@ -326,14 +391,20 @@ struct Source {
     decode: DecodeOptions,
 }
 
+/// The compositing half of an export: everything after decoding.
 struct Job<'a> {
+    settings: &'a ExportSettings,
+    /// The section's title card at the output size, if it has one.
+    title: Option<VideoFrame>,
+}
+
+/// The decoding half of an export: the open readers, on whichever thread
+/// decodes.
+struct Decoder<'a> {
     sources: &'a [Source],
     media: &'a dyn MediaBackend,
     /// Open readers, most recently used last.
     readers: Vec<OpenReader<'a>>,
-    settings: &'a ExportSettings,
-    /// The section's title card at the output size, if it has one.
-    title: Option<VideoFrame>,
 }
 
 struct OpenReader<'a> {
@@ -344,15 +415,20 @@ struct OpenReader<'a> {
     recent: Vec<(Micros, VideoFrame)>,
 }
 
-impl<'a> Job<'a> {
-    /// Write every frame and the audio, finish the file, return the
-    /// encoder name.
+/// One output frame's decoded layers, in [`OutputFrame::layers`] order.
+type Decoded = Result<Vec<VideoFrame>, RenderError>;
+
+impl Job<'_> {
+    /// Write every frame of `frame_plan` and the audio, finish the file,
+    /// return the encoder name. `decoded` gives each frame's layers, called
+    /// once per frame in plan order.
     fn write_all(
-        &mut self,
+        &self,
         mut writer: Box<dyn VideoWriter>,
         frame_plan: &crate::FramePlan<'_>,
         audio: &[f32],
         progress: &mut dyn FnMut(Progress) -> ControlFlow<()>,
+        decoded: &mut dyn FnMut(&OutputFrame) -> Decoded,
     ) -> Result<String, RenderError> {
         let s = self.settings;
         let channels = usize::from(s.audio_channels);
@@ -360,7 +436,8 @@ impl<'a> Job<'a> {
         let mut out = VideoFrame::solid(Micros(0), s.width, s.height, [0, 0, 0, 255]);
         let mut audio_sent = 0usize;
         for frame in frame_plan.iter() {
-            self.render(&frame, &mut out)?;
+            let layers = decoded(&frame)?;
+            self.render(&frame, &layers, &mut out)?;
             writer.write_video(&out)?;
             // Audio up to the end of this frame: about one frame's worth.
             let end = Micros(frame_pts(frame.index + 1, s.fps));
@@ -386,12 +463,17 @@ impl<'a> Job<'a> {
         Ok(name)
     }
 
-    fn render(&mut self, frame: &OutputFrame, out: &mut VideoFrame) -> Result<(), RenderError> {
-        let mut decoded = Vec::with_capacity(frame.layers.len());
-        for layer in &frame.layers {
-            decoded.push((self.fetch(layer.media_id, layer.src_time)?, layer.weight));
-        }
-        let layers: Vec<(&VideoFrame, f32)> = decoded.iter().map(|(f, w)| (f, *w)).collect();
+    fn render(
+        &self,
+        frame: &OutputFrame,
+        decoded: &[VideoFrame],
+        out: &mut VideoFrame,
+    ) -> Result<(), RenderError> {
+        let layers: Vec<(&VideoFrame, f32)> = decoded
+            .iter()
+            .zip(&frame.layers)
+            .map(|(f, l)| (f, l.weight))
+            .collect();
         out.pts = frame.pts;
         composite(&layers, out, Fit::Fill)?;
         for o in &frame.overlays {
@@ -403,6 +485,50 @@ impl<'a> Job<'a> {
             }
         }
         Ok(())
+    }
+}
+
+impl<'a> Decoder<'a> {
+    fn new(sources: &'a [Source], media: &'a dyn MediaBackend) -> Self {
+        Decoder {
+            sources,
+            media,
+            readers: Vec::new(),
+        }
+    }
+
+    /// The source frames of every layer of `frame`.
+    fn decode(&mut self, frame: &OutputFrame) -> Decoded {
+        frame
+            .layers
+            .iter()
+            .map(|l| self.fetch(l.media_id, l.src_time))
+            .collect()
+    }
+
+    /// Decode every frame of `edl`'s plan at `fps` into `tx`, in order,
+    /// until the plan ends, a decode fails (the error is the last item
+    /// sent) or the receiver is gone (the export stopped).
+    fn run(mut self, edl: &kv_core::Edl, fps: Rational, tx: &SyncSender<Decoded>) {
+        // The same plan as the export loop's (`plan` is deterministic);
+        // rebuilt here because its source-fps lookup is not `Sync`. Overlays
+        // do not matter for decoding, so no title.
+        let sources = self.sources;
+        let source_fps = |id: MediaId| sources.iter().find(|s| s.media_id == id).map(|s| s.fps);
+        let frame_plan = match plan(edl, fps, &source_fps) {
+            Ok(p) => p,
+            Err(e) => {
+                let _ = tx.send(Err(e.into()));
+                return;
+            }
+        };
+        for frame in frame_plan.iter() {
+            let decoded = self.decode(&frame);
+            let failed = decoded.is_err();
+            if tx.send(decoded).is_err() || failed {
+                return;
+            }
+        }
     }
 
     /// The frame of `media_id` displayed at `t`.
@@ -488,6 +614,8 @@ mod tests {
         size: (u32, u32),
         live: Arc<AtomicUsize>,
         frame_ats: Arc<Mutex<Vec<Micros>>>,
+        /// Fails every `frame_at` from 0.5 s (a path containing "broken").
+        broken: bool,
     }
 
     impl Drop for FakeReader {
@@ -538,6 +666,7 @@ mod tests {
                 .unwrap()
                 .to_string_lossy()
                 .trim_start_matches("clip")
+                .trim_end_matches("-broken")
                 .parse()
                 .unwrap();
             Ok(Box::new(FakeReader {
@@ -546,6 +675,7 @@ mod tests {
                 size: opts.size.unwrap_or((64, 48)),
                 live: self.live.clone(),
                 frame_ats: self.frame_ats.clone(),
+                broken: path.to_string_lossy().contains("broken"),
             }))
         }
     }
@@ -562,6 +692,12 @@ mod tests {
         }
         fn frame_at(&mut self, t: Micros) -> kv_media::Result<Option<VideoFrame>> {
             self.frame_ats.lock().unwrap().push(t);
+            if self.broken && t >= Micros(500_000) {
+                return Err(MediaError::Decode {
+                    path: PathBuf::new(),
+                    message: "corrupt packet".into(),
+                });
+            }
             let l = self.level;
             Ok(Some(VideoFrame::solid(
                 t,
@@ -974,6 +1110,92 @@ mod tests {
             5
         );
         assert!(!out.exists(), "partial file removed");
+    }
+
+    #[test]
+    fn a_decode_error_mid_export_names_the_media_and_removes_the_file() {
+        let mut p = project(2, &[1, 2]);
+        p.media[1].path = "clips/clip2-broken.mp4".into();
+        for lookahead in [0, 1, DECODE_AHEAD] {
+            let (media, enc) = (FakeMedia::default(), FakeEncoder::default());
+            let out = std::env::temp_dir().join(format!(
+                "kv-render-decode-err-{}-{lookahead}.mp4",
+                std::process::id()
+            ));
+            std::fs::write(&out, b"partial").unwrap();
+            let err = export_with_lookahead(
+                &p,
+                Project::DEFAULT_SECTION,
+                Path::new("/root"),
+                &media,
+                &enc,
+                &out,
+                &settings(),
+                &mut |_| ControlFlow::Continue(()),
+                lookahead,
+            )
+            .unwrap_err();
+            match err {
+                RenderError::Source {
+                    media_id,
+                    path,
+                    source: MediaError::Decode { .. },
+                } => {
+                    assert_eq!(media_id, MediaId(2));
+                    assert_eq!(path, Path::new("/root/clips/clip2-broken.mp4"));
+                }
+                other => panic!("lookahead {lookahead}: {other:?}"),
+            }
+            // Clip 1, then clip 2 up to 0.5 s: 15 frames, never finished.
+            let calls = enc.calls.lock().unwrap().clone();
+            let videos = calls
+                .iter()
+                .filter(|c| matches!(c, Call::Video { .. }))
+                .count();
+            assert_eq!(videos, 15, "lookahead {lookahead}");
+            assert!(!calls.contains(&Call::Finish));
+            assert!(!out.exists(), "partial file removed");
+            assert_eq!(media.live.load(Ordering::SeqCst), 0, "readers closed");
+        }
+    }
+
+    #[test]
+    fn serial_and_pipelined_exports_write_the_same_calls() {
+        // Reused, evicted and reopened readers, and slow-motion blends.
+        let mut p = project(6, &[1, 2, 1, 3, 4, 1, 5, 6, 2]);
+        p.sections[0].edit.segments[3].speed = Speed(50);
+        p.sections[0].edit.repack();
+        let run = |lookahead| {
+            let (media, enc) = (FakeMedia::default(), FakeEncoder::default());
+            export_with_lookahead(
+                &p,
+                Project::DEFAULT_SECTION,
+                Path::new("/root"),
+                &media,
+                &enc,
+                Path::new("/nonexistent/out.mp4"),
+                &settings(),
+                &mut |_| ControlFlow::Continue(()),
+                lookahead,
+            )
+            .unwrap();
+            assert!(media.max_live.load(Ordering::SeqCst) <= MAX_OPEN_READERS);
+            assert_eq!(media.live.load(Ordering::SeqCst), 0);
+            let opens: Vec<PathBuf> = media
+                .opens
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|o| o.0.clone())
+                .collect();
+            let asked = media.frame_ats.lock().unwrap().clone();
+            let calls = enc.calls.lock().unwrap().clone();
+            let frames = enc.frames.lock().unwrap().clone();
+            (opens, asked, calls, frames)
+        };
+        let serial = run(0);
+        assert_eq!(serial, run(1));
+        assert_eq!(serial, run(DECODE_AHEAD));
     }
 
     #[test]
