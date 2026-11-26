@@ -142,7 +142,12 @@ fn handshake_list_and_call_every_tool() {
     assert_eq!(
         names,
         [
+            "aspect_set",
+            "clip_audio_set",
             "edit_exclude_range",
+            "edit_move_cut",
+            "edit_move_segment",
+            "edit_nudge_cut",
             "edit_pin_range",
             "edit_redo",
             "edit_regenerate",
@@ -157,7 +162,11 @@ fn handshake_list_and_call_every_tool() {
             "music_beats",
             "music_clear",
             "music_set",
-            "project_state"
+            "music_volume_set",
+            "project_state",
+            "style_set",
+            "title_clear",
+            "title_set"
         ]
     );
     for name in &names {
@@ -190,6 +199,54 @@ fn handshake_list_and_call_every_tool() {
             );
         }
     }
+
+    // The look tools take their values from JSON-schema enums.
+    let enum_values = |schema: &Value, field: &str| -> Vec<String> {
+        // The enum may be inline or behind a $ref into $defs.
+        let prop = &schema["properties"][field];
+        let target = match prop["$ref"].as_str() {
+            Some(r) => &schema["$defs"][r.rsplit('/').next().unwrap()],
+            None => prop,
+        };
+        let mut values: Vec<String> = match target["enum"].as_array() {
+            Some(v) => v.iter().map(|v| v.as_str().unwrap().to_owned()).collect(),
+            None => target["oneOf"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{field}: no enum in {schema}"))
+                .iter()
+                .map(|v| {
+                    v["const"]
+                        .as_str()
+                        .or_else(|| v["enum"][0].as_str())
+                        .unwrap()
+                        .to_owned()
+                })
+                .collect(),
+        };
+        values.sort_unstable();
+        values
+    };
+    let style_set = schema("style_set");
+    assert_eq!(style_set["required"], json!(["style"]));
+    assert_eq!(
+        enum_values(&style_set, "style"),
+        ["action", "cut", "smooth"]
+    );
+    let aspect_set = schema("aspect_set");
+    assert_eq!(aspect_set["required"], json!(["aspect"]));
+    assert_eq!(
+        enum_values(&aspect_set, "aspect"),
+        ["landscape16x9", "portrait9x16", "square1x1"]
+    );
+    assert_eq!(
+        schema("music_volume_set")["properties"]["percent"]["maximum"],
+        100
+    );
+    assert_eq!(schema("title_set")["required"], json!(["text"]));
+    assert_eq!(
+        schema("edit_nudge_cut")["properties"]["beats"]["type"],
+        "integer"
+    );
 
     // project_state on an empty project: the session snapshot.
     let state = c.call_ok("project_state", json!({}));
@@ -315,6 +372,40 @@ fn handshake_list_and_call_every_tool() {
     let (is_error, text) = c.call("edit_undo", json!({}));
     assert!(is_error);
     assert_eq!(text, "Nothing to undo.");
+
+    // Look and tweak tools on the empty project.
+    c.call_ok("aspect_set", json!({"aspect": "portrait9x16"}));
+    c.call_ok("style_set", json!({"style": "smooth"}));
+    c.call_ok("music_volume_set", json!({"percent": 60}));
+    c.call_ok("title_set", json!({"text": "Day one"}));
+    let state = c.call_ok("project_state", json!({}));
+    let project = &state["project"];
+    assert_eq!(project["settings"]["aspect_ratio"], "portrait9x16");
+    assert_eq!(project["settings"]["music_volume_percent"], 60);
+    assert_eq!(project["sections"][0]["style"], "smooth");
+    assert_eq!(
+        project["sections"][0]["title"],
+        json!({"text": "Day one", "duration": 3_000_000})
+    );
+    c.call_ok("title_clear", json!({}));
+    let (is_error, text) = c.call("title_set", json!({"text": "x".repeat(81)}));
+    assert!(is_error && text.contains("title"), "{text}");
+    let (is_error, text) = c.call("music_volume_set", json!({"percent": 101}));
+    assert!(is_error && text.contains("between 0 and 100"), "{text}");
+    let (is_error, _) = c.call("clip_audio_set", json!({"media_id": 9, "enabled": false}));
+    assert!(is_error);
+    // No edit yet: segment and cut indices are out of range.
+    for (tool, args) in [
+        ("edit_move_segment", json!({"from": 0, "to": 1})),
+        ("edit_nudge_cut", json!({"cut": 1, "beats": 1})),
+        ("edit_move_cut", json!({"cut": 1, "to_us": 1_000_000})),
+    ] {
+        let (is_error, text) = c.call(tool, args);
+        assert!(
+            is_error && text.contains("no longer in the timeline"),
+            "{tool}: {text}"
+        );
+    }
     drop(c);
     assert!(cache.join("cache.sqlite").exists());
     let _ = std::fs::remove_dir_all(&cache);

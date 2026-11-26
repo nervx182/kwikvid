@@ -4,8 +4,10 @@
 //!
 //! - [`project`] - `project_state`.
 //! - [`media`] - `media_add`, `media_import`, `media_remove`.
-//! - [`edit`] - pin, exclude and their inverses, undo, redo.
+//! - [`edit`] - pin, exclude and their inverses, undo, redo; tweaks: move
+//!   segment, nudge or move a cut, clip audio, music volume.
 //! - [`music`] - music set/clear/beats, target length, regenerate, re-roll.
+//! - [`style`] - style preset, aspect ratio, title card.
 //!
 //! Shared helpers (result shapes, errors, path handling) live here.
 
@@ -24,6 +26,7 @@ pub mod edit;
 pub mod media;
 pub mod music;
 pub mod project;
+pub mod style;
 
 /// What every write tool returns (see `crates/kv-mcp/README.md`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
