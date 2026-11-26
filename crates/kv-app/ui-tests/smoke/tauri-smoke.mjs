@@ -5,7 +5,7 @@
 //
 //   cargo build -p kv-app
 //   cargo install tauri-driver --locked
-//   sudo apt-get install webkit2gtk-driver xvfb
+//   sudo apt-get install webkitgtk-webdriver xvfb
 //   xvfb-run -a node smoke/tauri-smoke.mjs
 //
 // Env: KV_APP_BIN (default <repo>/target/debug/kwikvid-app),
