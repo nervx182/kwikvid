@@ -55,7 +55,9 @@ use std::time::{Duration, Instant};
 
 use kv_audio::{render_music_bed, MusicBedOptions, PcmAudio};
 use kv_core::{Edl, MediaId, Micros, MusicRef, Project, SectionId, TitleCard};
-use kv_media::{DecodeOptions, MediaBackend, Rational, VideoFrame, VideoReader};
+use kv_media::{
+    Chapter, ChapteredReader, DecodeOptions, MediaBackend, Rational, VideoFrame, VideoReader,
+};
 
 pub use audio::{AudioClock, AudioOutput, AudioTransport, NullOutput};
 pub use clock::{Clock, ManualClock, SystemClock};
@@ -202,6 +204,9 @@ struct Edit {
     edl: Edl,
     title: Option<TitleCard>,
     sources: HashMap<MediaId, PathBuf>,
+    /// The chapter files of the chaptered sources, by first file (the
+    /// path in `sources`); single-file sources are not listed.
+    chapters: HashMap<PathBuf, Arc<[Chapter]>>,
     len: u64,
     end: Micros,
 }
@@ -343,7 +348,7 @@ impl PreviewEngine {
                 let fit = config.fit;
                 std::thread::Builder::new()
                     .name(format!("kv-preview-decode-{i}"))
-                    .spawn(move || worker(&shared, media.as_ref(), size, fit))
+                    .spawn(move || worker(&shared, &media, size, fit))
                     .expect("spawn preview decode worker")
             })
             .collect();
@@ -385,10 +390,18 @@ impl PreviewEngine {
                 .unwrap_or(0),
         );
         let mut sources = HashMap::new();
+        let mut chapters = HashMap::new();
         for seg in &edl.segments {
             match project.media_item(seg.media_id) {
                 Some(item) => {
-                    sources.insert(item.id, resolve(&self.config.media_root, &item.path));
+                    let path = resolve(&self.config.media_root, &item.path);
+                    if !item.chapters.is_empty() {
+                        let c = Chapter::from_refs(&item.chapters, |p| {
+                            resolve(&self.config.media_root, p)
+                        });
+                        chapters.insert(path.clone(), Arc::from(c));
+                    }
+                    sources.insert(item.id, path);
                 }
                 None => tracing::warn!(media_id = seg.media_id.0, "preview: media not in project"),
             }
@@ -412,11 +425,18 @@ impl PreviewEngine {
             st.anchor = now;
             st.cancel_all();
             let wanted: HashSet<&PathBuf> = sources.values().collect();
-            st.readers.retain(|path, _| wanted.contains(path));
+            // Keep a reader only for a file still used, with the same
+            // chapters as before.
+            let old_chapters = st.edit.as_ref().map(|e| e.chapters.clone());
+            st.readers.retain(|path, _| {
+                wanted.contains(path)
+                    && old_chapters.as_ref().and_then(|c| c.get(path)) == chapters.get(path)
+            });
             st.edit = Some(Edit {
                 edl,
                 title: sec.title.clone(),
                 sources,
+                chapters,
                 len,
                 end,
             });
@@ -818,7 +838,7 @@ fn resolve(root: &Path, rel: &str) -> PathBuf {
 
 /// Decode worker: takes the earliest queued job whose file's reader is
 /// free, decodes it outside the lock, stores the frame.
-fn worker(shared: &Shared, media: &dyn MediaBackend, size: (u32, u32), fit: Fit) {
+fn worker(shared: &Shared, media: &Arc<dyn MediaBackend>, size: (u32, u32), fit: Fit) {
     let mut st = shared.lock();
     loop {
         if st.shutdown {
@@ -834,10 +854,14 @@ fn worker(shared: &Shared, media: &dyn MediaBackend, size: (u32, u32), fit: Fit)
         }
         st.busy.insert(job.path.clone());
         let reader = st.readers.remove(&job.path);
+        let chapters = st
+            .edit
+            .as_ref()
+            .and_then(|e| e.chapters.get(&job.path).cloned());
         drop(st);
 
         let opened = reader.is_none();
-        let (reader, slot) = decode(media, reader, &job, size, fit);
+        let (reader, slot) = decode(media, reader, &job, chapters, size, fit);
 
         st = shared.lock();
         st.busy.remove(&job.path);
@@ -865,16 +889,17 @@ fn worker(shared: &Shared, media: &dyn MediaBackend, size: (u32, u32), fit: Fit)
 }
 
 fn decode(
-    media: &dyn MediaBackend,
+    media: &Arc<dyn MediaBackend>,
     reader: Option<Box<dyn VideoReader>>,
     job: &Job,
+    chapters: Option<Arc<[Chapter]>>,
     size: (u32, u32),
     fit: Fit,
 ) -> (Option<Box<dyn VideoReader>>, Slot) {
     let (media_id, t) = job.key;
     let mut reader = match reader {
         Some(r) => r,
-        None => match open(media, &job.path, size, fit) {
+        None => match open(media, &job.path, chapters, size, fit) {
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!(media_id = media_id.0, path = %job.path.display(), "preview: cannot open source: {e}");
@@ -907,10 +932,12 @@ fn decode(
     (Some(reader), slot)
 }
 
-/// Open `path` decoding upright at the size the compositor needs.
+/// Open `path` (or, for a chaptered source, its `chapters` as one clip)
+/// decoding upright at the size the compositor needs.
 fn open(
-    media: &dyn MediaBackend,
+    media: &Arc<dyn MediaBackend>,
     path: &Path,
+    chapters: Option<Arc<[Chapter]>>,
     size: (u32, u32),
     fit: Fit,
 ) -> kv_media::Result<Box<dyn VideoReader>> {
@@ -924,13 +951,19 @@ fn open(
         (video.width, video.height)
     };
     let dec = source_size_for(size.0, size.1, w, h, fit);
-    media.open_video(
-        path,
-        &DecodeOptions {
-            size: (dec != (0, 0)).then_some(dec),
-            apply_rotation: true,
-        },
-    )
+    let opts = DecodeOptions {
+        size: (dec != (0, 0)).then_some(dec),
+        apply_rotation: true,
+    };
+    match chapters {
+        Some(chapters) => {
+            let media = Arc::clone(media);
+            let reader =
+                ChapteredReader::new(chapters.to_vec(), move |p| media.open_video(p, &opts))?;
+            Ok(Box::new(reader))
+        }
+        None => media.open_video(path, &opts),
+    }
 }
 
 /// Calls [`PreviewEngine::tick`] on a thread, for hosts without a vsync

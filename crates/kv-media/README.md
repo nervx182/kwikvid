@@ -38,6 +38,19 @@ including 10-bit HEVC, is converted to 8-bit RGBA by swscale using the
 stream's colour matrix and range (untagged streams: BT.709 from 720 lines up,
 else BT.601).
 
+### Chaptered recordings
+
+A GoPro recording the camera split into chapter files (`GX01xxxx.MP4`,
+`GX02xxxx.MP4`, ...) is one `MediaItem` with `chapters`. `ChapteredReader`
+is a `VideoReader` over one reader per chapter file: item time `t` maps to
+the chapter whose span (from the sum of the earlier chapters' durations)
+holds it, frames come out with pts in item time, and `next_frame` runs on
+into the next file. A frame at or past its (non-last) chapter's duration is
+dropped, so the boundary has no duplicate. Files open on first use; at most
+two stay open. `open_item_video(backend, path, chapters, opts)` returns the
+plain reader when `chapters` is empty and a `ChapteredReader` otherwise.
+Clip audio across chapters is not handled yet.
+
 `FfmpegBackend` decodes on the CPU with FFmpeg's frame threading; hardware
 decode (VideoToolbox) is a later item. Errors: `Open` (unreadable or
 truncated container), `NoVideoStream`, `Decode` (corrupt data, unsupported
