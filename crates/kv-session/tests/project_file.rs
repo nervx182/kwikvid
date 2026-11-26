@@ -431,3 +431,45 @@ fn reopen_jobs_cover_existing_media_and_music_only() {
         vec![Job::ProbeMedia(clip(1)), Job::ReadHilights(clip(1))]
     );
 }
+
+/// Regression for #111: finished music analyses are keyed by project path,
+/// so Save As must re-key them along with the project.
+#[test]
+fn music_analyses_follow_the_project_through_save_as() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let mut s = Session::new(root.to_owned());
+    let song = root.join("music").join("song.wav");
+    touch(&song);
+    let path = s.to_project_path(&song).unwrap();
+    assert_eq!(path, "music/song.wav");
+    let analysis = kv_audio::MusicAnalysis {
+        duration: secs(30),
+        tempo_bpm: 120.0,
+        beats: vec![secs(0), secs(1)],
+        downbeats: vec![secs(0)],
+        onsets: Vec::new(),
+        energy: vec![0.5; 4],
+    };
+    s.set_music_analysis(path.clone(), analysis.clone());
+    s.apply(Command::SetMusic {
+        section: S,
+        music: Some(MusicRef {
+            path,
+            duration: secs(30),
+        }),
+    })
+    .unwrap();
+
+    let file = root.join("projects").join("x.kwikvid");
+    fs::create_dir_all(file.parent().unwrap()).unwrap();
+    let snap = s.save_as(&file).unwrap();
+    let music = snap.project.sections[0].music.clone().unwrap();
+    assert_eq!(music.path, "../music/song.wav");
+    assert_eq!(s.music_analysis(&music), Some(&analysis));
+    // The analyses handed to regenerate use the new keys too.
+    assert_eq!(
+        s.analyses().keys().collect::<Vec<_>>(),
+        [&"../music/song.wav".to_string()]
+    );
+}
