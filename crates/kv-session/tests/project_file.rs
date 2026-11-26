@@ -473,3 +473,63 @@ fn music_analyses_follow_the_project_through_save_as() {
         [&"../music/song.wav".to_string()]
     );
 }
+
+/// `tmp/link` is a symlink to the deeper real folder `tmp/real/deep/project`,
+/// and the media lives in `tmp/media`, so a purely lexical `..` from the link
+/// would land in `tmp/real/deep/media` when the OS resolves it physically.
+#[cfg(unix)]
+fn symlinked_project_folder(tmp: &Path) -> (PathBuf, PathBuf) {
+    let real = tmp.join("real").join("deep").join("project");
+    fs::create_dir_all(&real).unwrap();
+    let link = tmp.join("link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let clip = tmp.join("media").join("GX01.MP4");
+    touch(&clip);
+    (link, clip)
+}
+
+#[cfg(unix)]
+#[test]
+fn media_outside_a_symlinked_project_folder_still_resolves() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (link, clip) = symlinked_project_folder(tmp.path());
+    let s = Session::new(link.clone());
+    let path = s.to_project_path(&clip).unwrap();
+    // Physically from the folder, as kv-render and the OS open it...
+    assert!(link.join(&path).is_file(), "{path} not found from {link:?}");
+    // ...and through the session.
+    assert!(
+        s.resolve(&path).is_file(),
+        "{path} -> {:?}",
+        s.resolve(&path)
+    );
+    assert!(s.missing_files().is_empty(), "{:?}", s.missing_files());
+}
+
+#[cfg(unix)]
+#[test]
+fn save_as_into_a_symlinked_project_folder_keeps_media_resolvable() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (link, clip) = symlinked_project_folder(tmp.path());
+    let mut s = Session::new(tmp.path().join("media"));
+    let path = s.to_project_path(&clip).unwrap();
+    s.apply(Command::AddMedia {
+        item: MediaItem {
+            id: MediaId(1),
+            path,
+            duration: secs(10),
+            kind: MediaKind::Video,
+            hilights: vec![],
+            clip_audio: false,
+            chapters: Vec::new(),
+        },
+    })
+    .unwrap();
+    s.save_as(&link.join("Trip.kwikvid")).unwrap();
+    let rebased = &s.project().media[0].path;
+    assert!(
+        link.join(rebased).is_file(),
+        "{rebased} not found from {link:?}"
+    );
+    assert!(s.missing_files().is_empty(), "{:?}", s.missing_files());
+}

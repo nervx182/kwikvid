@@ -19,8 +19,9 @@
 //! Every `MediaItem.path` / `MusicRef.path` in a project is relative to the
 //! session's media root and `/`-separated. [`Session::to_project_path`] and
 //! [`Session::resolve`] convert between host paths and project paths with
-//! pure lexical arithmetic (no `canonicalize`), using `..` for files outside
-//! the root. An untitled project's media root is the user's home directory;
+//! lexical arithmetic, using `..` for files outside the root. When the files
+//! exist the answer is checked against their canonical paths, so a root
+//! reached through a symlink (macOS `/var` -> `/private/var`) still works. An untitled project's media root is the user's home directory;
 //! [`Session::save_as`] rebases the paths onto the project file's folder,
 //! and [`Session::open`] uses the file's folder as the media root.
 //!
@@ -193,8 +194,10 @@ impl Session {
     }
 
     /// An absolute file path as a project path: `/`-separated, relative to
-    /// the media root, with `..` steps when the file is outside it. Pure
-    /// lexical arithmetic; nothing is read from disk.
+    /// the media root, with `..` steps when the file is outside it. Lexical
+    /// arithmetic, except that when the root and file exist and the root is
+    /// reached through a symlink, the path is computed between their
+    /// canonical forms so that it also resolves physically.
     ///
     /// Errors: the path is relative, the root is relative, the path is on
     /// another drive or share, the path is the root itself, or it is not
@@ -204,7 +207,9 @@ impl Session {
     }
 
     /// The absolute host path a project path refers to (the inverse of
-    /// [`Session::to_project_path`]).
+    /// [`Session::to_project_path`]). Lexical, unless the file the OS finds
+    /// (resolving `..` after symlinks) differs; then it is resolved from the
+    /// canonical media root.
     pub fn resolve(&self, project_path: &str) -> PathBuf {
         paths::resolve_native(&self.media_root, project_path)
     }
