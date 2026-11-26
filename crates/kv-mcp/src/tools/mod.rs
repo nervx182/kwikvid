@@ -2,12 +2,14 @@
 //! `#[tool_router(router = <area>_router)]` impl on [`KwikvidServer`];
 //! [`KwikvidServer::new`] adds the routers together.
 //!
-//! - [`project`] - `project_state`.
+//! - [`project`] - `project_state`, `project_new`, `project_save`,
+//!   `project_save_as`, `project_open`.
 //! - [`media`] - `media_add`, `media_import`, `media_remove`.
 //! - [`edit`] - pin, exclude and their inverses, undo, redo; tweaks: move
 //!   segment, nudge or move a cut, clip audio, music volume.
 //! - [`music`] - music set/clear/beats, target length, regenerate, re-roll.
 //! - [`style`] - style preset, aspect ratio, title card.
+//! - [`export`] - export options, start, status, cancel.
 //!
 //! Shared helpers (result shapes, errors, path handling) live here.
 
@@ -23,6 +25,7 @@ use serde::Serialize;
 use crate::KwikvidServer;
 
 pub mod edit;
+pub mod export;
 pub mod media;
 pub mod music;
 pub mod project;

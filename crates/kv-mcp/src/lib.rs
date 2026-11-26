@@ -61,7 +61,12 @@ pub const INSTRUCTIONS: &str = "kwikvid video editor. Tools: \
     music_volume_set (0-100 percent); these tweaks do not rebuild the edit, \
     style_set (cut, smooth or action; rebuilds the edit), \
     aspect_set (landscape16x9, portrait9x16 or square1x1), \
-    title_set / title_clear (title card at the start of a section). \
+    title_set / title_clear (title card at the start of a section), \
+    export_options (codecs, aspect, file name, blocked reason), \
+    export_start (MP4 in the root; returns an id at once), \
+    export_status (progress or result; wait_ms waits up to 30 s), export_cancel, \
+    project_new, project_save, project_save_as / project_open (a .kwikvid file \
+    directly in the root; open lists missing files and re-analyses the music). \
     Write tools rebuild the auto-edit when the project has music and its analysis, \
     and return revision, can_undo, can_redo, dirty, manual_edits_replaced, \
     regen_error and an edit summary. The project://current resource holds the \
@@ -73,7 +78,11 @@ pub const INSTRUCTIONS: &str = "kwikvid video editor. Tools: \
 #[derive(Clone)]
 pub struct KwikvidServer {
     session: Arc<Mutex<Session>>,
+    /// `--root`: the sandbox. The session's media root always equals it
+    /// (project files must sit directly in it).
+    root: PathBuf,
     ctx: JobContext,
+    exports: Arc<tools::export::Exports>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -92,14 +101,27 @@ impl KwikvidServer {
     /// music analyzer and the cache; tests inject fakes.
     pub fn new(root: PathBuf, ctx: JobContext) -> Self {
         KwikvidServer {
-            session: Arc::new(Mutex::new(Session::new(root))),
+            session: Arc::new(Mutex::new(Session::new(root.clone()))),
+            root,
             ctx,
+            exports: Arc::new(tools::export::Exports::new(Err(
+                "Export is unavailable: no video encoder.".into(),
+            ))),
             tool_router: Self::project_router()
                 + Self::media_router()
                 + Self::edit_router()
                 + Self::music_router()
-                + Self::style_router(),
+                + Self::style_router()
+                + Self::export_router(),
         }
+    }
+
+    /// Use `encoder` for exports (with the context's media backend for
+    /// decoding), or report its error as the reason exports are blocked.
+    /// Without it, `export_options` says exports are unavailable.
+    pub fn with_encoder(mut self, encoder: tools::export::EncoderBackend) -> Self {
+        self.exports = Arc::new(tools::export::Exports::new(encoder));
+        self
     }
 
     /// A copy of the current project.
@@ -128,7 +150,7 @@ impl KwikvidServer {
 
     /// The media root (`--root`).
     pub(crate) fn root(&self) -> PathBuf {
-        self.lock().media_root().to_owned()
+        self.root.clone()
     }
 
     /// Apply `cmd` through [`Session::apply_and_regenerate`] and report the
@@ -335,7 +357,7 @@ mod tests {
         let server = server();
         let readme = include_str!("../README.md");
         let tools = server.tool_router.list_all();
-        assert_eq!(tools.len(), 25, "{tools:?}");
+        assert_eq!(tools.len(), 33, "{tools:?}");
         for tool in tools {
             assert!(INSTRUCTIONS.contains(&*tool.name), "{} missing", tool.name);
             assert!(

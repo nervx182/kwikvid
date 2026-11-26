@@ -36,6 +36,14 @@ reverts the command together with the rebuild it caused.
 | `aspect_set` | `SetAspectRatio` (no rebuild) | `aspect`: `landscape16x9` (16:9 landscape), `portrait9x16` (9:16 portrait) or `square1x1` (1:1 square) |
 | `title_set` | `SetTitleCard` (no rebuild) | `text` (1-80 characters), optional `duration_us` (0.5-5 s, default 3 s), optional `section` |
 | `title_clear` | `SetTitleCard` with no title (no rebuild) | optional `section` |
+| `export_options` | `Session::export_options` (read) | optional `section` |
+| `export_start` | `Session::export_input`, then `ExportJob::start` (FFmpeg encoder) | `path` (`.mp4` inside the root), optional `codec` (`h264`, `hevc`), `resolution` (`1080p`, `4k`), `aspect`, `section` |
+| `export_status` | the export's latest `ExportEvent` (read) | `id`, optional `wait_ms` (at most 30000) |
+| `export_cancel` | `ExportJob::cancel` | `id` |
+| `project_new` | `Session::new` (replaces the session) | none |
+| `project_save` | `Session::save` | none |
+| `project_save_as` | `Session::save_as` | `path` (a `.kwikvid` file directly in the root) |
+| `project_open` | `Session::open` (replaces the session), then `Job::AnalyzeMusic` for its music (cached) | `path` (a `.kwikvid` file directly in the root) |
 
 ## Results
 
@@ -79,6 +87,42 @@ Some tools add keys to the write result:
 "downbeats_us"}`. `edit_regenerate` and `edit_reroll` return an error with
 the user-facing reason ("Add music to create an edit.", "Pinned moments are
 longer than the target length.", ...) when the edit cannot be built.
+
+### Export
+
+`export_options` returns `{"codecs": ["h264"], "aspect": "landscape16x9",
+"resolution": "1080p", "file_name": "Untitled.mp4", "blocked": null}`;
+`blocked` is why exporting is not possible now (empty edit, missing clip or
+music, no FFmpeg), and `export_start` is then refused with that message.
+`export_start` returns at once with `{"id", "path", "codec", "resolution",
+"aspect", "width", "height", "fps"}` (always 30 fps). One export runs at a
+time. `export_status` returns the latest event:
+
+```json
+{"id": 1, "state": "progress", "frame": 30, "total_frames": 300, "fraction": 0.1, "eta_ms": 9000}
+{"id": 1, "state": "done", "report": {"path": "trip.mp4", "frames": 300, "duration": 10000000,
+ "encoder_name": "libopenh264", "elapsed_ms": 9500}}
+```
+
+`state` is `started`, `progress`, `done`, `failed` (with `message`) or
+`cancelled`. With `wait_ms` it waits (at most 30 s) for one of the last
+three, so a client need not poll in a tight loop. The file is written as
+`.<name>.partial` and renamed when done; a cancelled or failed export leaves
+no file.
+
+### Projects
+
+A project file's media paths are relative to its folder, so project files
+must be directly in `--root` (a file in a subfolder or elsewhere is
+refused). `project_new`, `project_save`, `project_save_as` and
+`project_open` return the write result plus `file` (the file name, `null`
+while untitled) and `missing` (only from `project_open`: files the project
+references that do not exist, `[{"type": "media", "media_id": 2, "path":
+"clips/a.mp4"}]` or `{"type": "music", "section": 1, ...}`). New and open
+discard unsaved changes. `project_open` analyses the project's music before
+it returns (from the cache when unchanged), so `edit_regenerate` works at
+once; songs that fail are listed in `analysis_errors` (`[{"path",
+"message"}]`). `project_save` without a file is an error.
 
 A rejected command (unknown media, overlapping ranges, nothing to undo, a path
 outside the root, ...) is a tool result with `isError: true` and a short
