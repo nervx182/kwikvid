@@ -24,7 +24,10 @@ pub mod preview;
 pub mod title;
 
 pub use composite::{composite, overlay, source_size_for, CompositeError, Fit};
-pub use export::{export, ExportReport, Progress, RenderError, MAX_OPEN_READERS, MUSIC_FADE_OUT};
+pub use export::{
+    export, export_with_lookahead, ExportReport, Progress, RenderError, DECODE_AHEAD,
+    MAX_OPEN_READERS, MUSIC_FADE_OUT,
+};
 
 use kv_core::{Edl, MediaId, Micros, Segment, Speed, TitleCard, Transition};
 use kv_media::Rational;
