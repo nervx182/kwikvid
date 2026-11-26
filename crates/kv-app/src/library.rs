@@ -7,6 +7,10 @@
 //!   opens the native picker first and returns `null` when it is cancelled.
 //!   Both emit `kv://state` with the new snapshot and queue one
 //!   [`Job::Filmstrip`] per added item.
+//! - After New and Open, [`Library::ensure_filmstrips`] queues the filmstrip
+//!   of every video item that has no thumbnails yet and whose files exist
+//!   (the cache makes this quick for a reopened project). An item whose
+//!   files already have a filmstrip job in flight is not queued twice.
 //! - Every job event is forwarded as a [`JobUpdate`] on `kv://job`; a
 //!   finished filmstrip is stored in the session first, so the UI can load
 //!   the images as soon as it sees `"done"`.
@@ -17,9 +21,10 @@
 //! Thumbnails are kept in the session by path, so undo brings the images
 //! back with the item.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use kv_cache::Cache;
 use kv_core::MediaId;
@@ -103,6 +108,10 @@ impl JobUpdate {
 /// why import is unavailable (no FFmpeg).
 pub struct Library {
     jobs: Result<(JobContext, JobRunner), String>,
+    /// The files (host paths) of the filmstrip jobs queued and not yet
+    /// final, so the same filmstrip is not queued twice. Paths, not media
+    /// ids: ids are reused by the next opened project.
+    pending: Mutex<HashSet<Vec<PathBuf>>>,
 }
 
 impl Library {
@@ -112,6 +121,7 @@ impl Library {
         (
             Library {
                 jobs: Ok((ctx, runner)),
+                pending: Mutex::default(),
             },
             events,
         )
@@ -119,7 +129,10 @@ impl Library {
 
     /// A library that refuses to import, saying `why`.
     pub fn unavailable(why: String) -> Library {
-        Library { jobs: Err(why) }
+        Library {
+            jobs: Err(why),
+            pending: Mutex::default(),
+        }
     }
 
     /// The real backends (FFmpeg, the on-disk cache in the app's cache
@@ -144,6 +157,11 @@ impl Library {
                         session.handle_job_message(&msg);
                         crate::music::on_job_message(&app, &mut session, &msg, &mut update);
                     }
+                    // After storing the thumbnails, so a concurrent
+                    // `ensure_filmstrips` sees either them or the pending job.
+                    if let Some(library) = app.try_state::<Library>() {
+                        library.job_finished(&msg);
+                    }
                     emit(&app, JOB_EVENT, &update);
                 }
             })
@@ -163,14 +181,64 @@ impl Library {
         Ok(JobUpdate::queued(runner.submit(job.clone()), &job))
     }
 
-    /// Queue the filmstrip job of every added item; the updates to emit.
+    /// Queue the given filmstrip jobs, skipping any whose files already
+    /// have one pending; the updates to emit.
     fn submit_filmstrips(&self, jobs: Vec<Job>) -> Vec<JobUpdate> {
         let Ok((_, runner)) = &self.jobs else {
             return Vec::new();
         };
+        let mut pending = self.lock_pending();
         jobs.into_iter()
+            .filter(|job| match filmstrip_key(job) {
+                Some(key) => pending.insert(key),
+                None => true,
+            })
             .map(|job| JobUpdate::queued(runner.submit(job.clone()), &job))
             .collect()
+    }
+
+    /// Queue the filmstrip of every video item in `session` that has no
+    /// thumbnails and whose files all exist (e.g. after New or Open); the
+    /// updates to emit. Items with a pending filmstrip job are skipped.
+    pub fn ensure_filmstrips(&self, session: &Session) -> Vec<JobUpdate> {
+        let jobs = session
+            .project()
+            .media
+            .iter()
+            .filter(|item| session.thumbnail(item.id, 0).is_none())
+            .filter_map(|item| session.filmstrip_job(item.id))
+            .filter(|job| match job {
+                Job::Filmstrip { files, .. } => {
+                    !files.is_empty() && files.iter().all(|(p, _)| p.is_file())
+                }
+                _ => false,
+            })
+            .collect();
+        self.submit_filmstrips(jobs)
+    }
+
+    /// Forget a filmstrip job once it is final (done, failed or cancelled),
+    /// so a later [`Library::ensure_filmstrips`] may queue it again.
+    pub(crate) fn job_finished(&self, msg: &JobMessage) {
+        if !msg.event.is_final() {
+            return;
+        }
+        if let Some(key) = filmstrip_key(&msg.job) {
+            self.lock_pending().remove(&key);
+        }
+    }
+
+    fn lock_pending(&self) -> std::sync::MutexGuard<'_, HashSet<Vec<PathBuf>>> {
+        // A set of paths; a panic elsewhere cannot leave it invalid.
+        self.pending.lock().unwrap_or_else(|p| p.into_inner())
+    }
+}
+
+/// What identifies a filmstrip job in [`Library::pending`]: its files.
+fn filmstrip_key(job: &Job) -> Option<Vec<PathBuf>> {
+    match job {
+        Job::Filmstrip { files, .. } => Some(files.iter().map(|(p, _)| p.clone()).collect()),
+        _ => None,
     }
 }
 
@@ -530,6 +598,105 @@ mod tests {
         );
         session.undo().unwrap();
         assert_eq!(thumb_response(&session, &thumb).status(), StatusCode::OK);
+    }
+
+    fn video(id: u64, path: &str) -> Command {
+        Command::AddMedia {
+            item: kv_core::MediaItem {
+                id: MediaId(id),
+                path: path.into(),
+                duration: Micros(2_000_000),
+                kind: kv_core::MediaKind::Video,
+                hilights: vec![],
+                clip_audio: false,
+                chapters: vec![],
+            },
+        }
+    }
+
+    /// Feed job events to the session and the library until `n` jobs are
+    /// final, as the app's job event thread does.
+    fn finish_jobs(n: usize, events: &Receiver<JobMessage>, state: &AppState, library: &Library) {
+        let mut done = 0;
+        while done < n {
+            let msg = events.recv_timeout(Duration::from_secs(10)).unwrap();
+            state.session().unwrap().handle_job_message(&msg);
+            library.job_finished(&msg);
+            if msg.event.is_final() {
+                assert_eq!(JobUpdate::from_message(&msg).state, "done");
+                done += 1;
+            }
+        }
+    }
+
+    /// Open a project (as `open_project` does): one filmstrip job is queued
+    /// per video item whose file exists, none for a missing file, none again
+    /// while pending, and none once the thumbnails are in.
+    #[test]
+    fn opened_project_queues_missing_filmstrips_once() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.mp4"), b"a").unwrap();
+        std::fs::write(dir.path().join("b.mp4"), b"b").unwrap();
+        let mut other = Session::new(dir.path().to_path_buf());
+        other.apply(video(1, "a.mp4")).unwrap();
+        other.apply(video(2, "b.mp4")).unwrap();
+        other.apply(video(3, "gone/c.mp4")).unwrap();
+        let file = dir.path().join("trip.kwikvid");
+        other.save_as(&file).unwrap();
+
+        let state = AppState::new(Session::new(dir.path().to_path_buf()));
+        let files = crate::project::ProjectFiles::load(None);
+        let (library, events) = Library::new(ctx());
+        let opened = crate::project::open(&state, &files, &file).unwrap();
+        assert_eq!(opened.missing.len(), 1);
+
+        let updates = crate::project::queue_filmstrips(&state, &library);
+        let mut ids: Vec<_> = updates.iter().map(|u| u.media_id).collect();
+        ids.sort();
+        assert_eq!(ids, vec![Some(MediaId(1)), Some(MediaId(2))]);
+        assert!(updates
+            .iter()
+            .all(|u| u.state == "queued" && u.kind == "filmstrip"));
+        // Still pending: not queued again.
+        assert!(crate::project::queue_filmstrips(&state, &library).is_empty());
+
+        finish_jobs(2, &events, &state, &library);
+        let thumb = uri("kvthumb://2/0");
+        assert_eq!(
+            thumb_response(&state.session().unwrap(), &thumb).status(),
+            StatusCode::OK
+        );
+        // The thumbnails are in: nothing to queue.
+        assert!(crate::project::queue_filmstrips(&state, &library).is_empty());
+
+        // Reopening drops the session's thumbnails: queued again (the cache
+        // answers quickly).
+        crate::project::open(&state, &files, &file).unwrap();
+        assert_eq!(crate::project::queue_filmstrips(&state, &library).len(), 2);
+        finish_jobs(2, &events, &state, &library);
+    }
+
+    /// An item queued by import is not queued again by `ensure_filmstrips`.
+    #[test]
+    fn imported_item_with_a_pending_job_is_not_queued_twice() {
+        let dir = tempfile::tempdir().unwrap();
+        let clip = dir.path().join("GX010001.MP4");
+        std::fs::write(&clip, b"clip").unwrap();
+        let mut session = Session::new(dir.path().to_path_buf());
+        let (library, events) = Library::new(ctx());
+        let (ctx, _) = library.jobs().unwrap();
+        let (_, _, jobs) = import_into(&mut session, ctx, &[clip]).unwrap();
+        assert_eq!(library.submit_filmstrips(jobs).len(), 1);
+        assert!(library.ensure_filmstrips(&session).is_empty());
+        // Once final (here: done), it may be queued again if needed.
+        let msg = loop {
+            let msg = events.recv_timeout(Duration::from_secs(10)).unwrap();
+            if msg.event.is_final() {
+                break msg;
+            }
+        };
+        library.job_finished(&msg);
+        assert_eq!(library.ensure_filmstrips(&session).len(), 1);
     }
 
     #[test]

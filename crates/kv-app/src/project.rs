@@ -6,7 +6,9 @@
 //! window side (native file pickers, `kv://state`, rebuilding the Open
 //! Recent menu). The UI (`ui/js/project.js`) runs the flows: it asks about
 //! unsaved changes, picks a path, then calls one of these commands. Every
-//! one returns a [`ProjectState`].
+//! one returns a [`ProjectState`]. New and Open then queue the library's
+//! missing filmstrips ([`queue_filmstrips`]) and emit their `kv://job`
+//! `queued` updates.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -17,6 +19,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager, Runtime, State};
 
 use crate::ipc::{AppState, IpcError};
+use crate::library::{JobUpdate, Library};
 use crate::menu;
 
 /// What every project command returns to the UI.
@@ -175,6 +178,18 @@ pub fn save_as(
     Ok(project_state(&session, Vec::new()))
 }
 
+/// Queue the filmstrip of every library item that has none yet (see
+/// [`Library::ensure_filmstrips`]); the `queued` updates to emit.
+pub fn queue_filmstrips(state: &AppState, library: &Library) -> Vec<JobUpdate> {
+    match state.session() {
+        Ok(session) => library.ensure_filmstrips(&session),
+        Err(e) => {
+            tracing::warn!(error = %e.message, "no filmstrips queued");
+            Vec::new()
+        }
+    }
+}
+
 // ---- Tauri commands -------------------------------------------------------
 
 fn changed<R: Runtime>(
@@ -183,6 +198,21 @@ fn changed<R: Runtime>(
 ) -> Result<ProjectState, IpcError> {
     if let Ok(p) = &result {
         crate::emit_state(app, &p.snapshot);
+    }
+    result
+}
+
+/// After a successful New or Open: queue the missing filmstrips and emit
+/// their `kv://job` updates.
+fn with_filmstrips<R: Runtime>(
+    app: &AppHandle<R>,
+    result: Result<ProjectState, IpcError>,
+) -> Result<ProjectState, IpcError> {
+    if result.is_ok() {
+        let library = app.state::<Library>();
+        for u in queue_filmstrips(&app.state::<AppState>(), &library) {
+            crate::library::emit_job(app, &u);
+        }
     }
     result
 }
@@ -198,7 +228,10 @@ pub fn project_info(state: State<'_, AppState>) -> Result<ProjectState, IpcError
 
 #[tauri::command]
 pub fn new_project(app: AppHandle, state: State<'_, AppState>) -> Result<ProjectState, IpcError> {
-    changed(&app, start_new(&state, crate::media_root(&app)))
+    with_filmstrips(
+        &app,
+        changed(&app, start_new(&state, crate::media_root(&app))),
+    )
 }
 
 #[tauri::command]
@@ -208,7 +241,7 @@ pub fn open_project(
     files: State<'_, ProjectFiles>,
     path: PathBuf,
 ) -> Result<ProjectState, IpcError> {
-    let result = changed(&app, open(&state, &files, &path));
+    let result = with_filmstrips(&app, changed(&app, open(&state, &files, &path)));
     refresh_recent(&app);
     result
 }

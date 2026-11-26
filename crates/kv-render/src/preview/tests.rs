@@ -903,7 +903,15 @@ impl AudioRig {
             duration: Micros(3_000_000),
         });
         project.settings.music_volume_percent = volume_percent;
+        let mut opts = MusicBedOptions::new(AUDIO_RATE, 1, Micros(2_000_000));
+        opts.fade_out = crate::MUSIC_FADE_OUT;
+        let bed = render_music_bed(&music, &opts).unwrap();
+        AudioRig::build(&project, bed)
+    }
 
+    /// An engine with a hand-pulled mono device showing `project`; `bed`
+    /// is what the test expects it to play.
+    fn build(project: &Project, bed: PcmAudio) -> AudioRig {
         // The device: mono at 8 kHz, pulled by hand (see `pull`).
         let wall = Arc::new(ManualClock::new());
         let transport = AudioTransport::new(AUDIO_RATE, 1, wall.clone());
@@ -932,11 +940,8 @@ impl AudioRig {
             config,
         )
         .unwrap();
-        engine.set_edit(&project, Project::DEFAULT_SECTION).unwrap();
-
-        let mut opts = MusicBedOptions::new(AUDIO_RATE, 1, Micros(2_000_000));
-        opts.fade_out = crate::MUSIC_FADE_OUT;
-        let bed = render_music_bed(&music, &opts).unwrap();
+        engine.set_edit(project, Project::DEFAULT_SECTION).unwrap();
+        assert!(engine.wait_for_audio(WAIT));
         AudioRig {
             engine,
             out,
@@ -1028,4 +1033,149 @@ fn audio_uses_the_project_music_volume() {
     for (g, b) in got.iter().zip(rig.bed_at(0, 500)) {
         assert!((g - b * 0.5).abs() < 1e-6, "{g} vs {b}");
     }
+}
+
+// ---- Clip audio: mixed under the music as in export.
+
+/// Amplitude of the tone in the clip fixtures.
+const TONE: f32 = 0.05;
+
+/// Amplitude of the `freq` Hz component of `x` (Hann-windowed single-bin
+/// DFT, normalised so a sine of amplitude `a` gives `a`).
+fn tone_level(x: &[f32], freq: f32, rate: u32) -> f32 {
+    let n = x.len() as f64;
+    let (mut re, mut im, mut wsum) = (0.0f64, 0.0f64, 0.0f64);
+    for (i, &v) in x.iter().enumerate() {
+        let w = 0.5 - 0.5 * (std::f64::consts::TAU * i as f64 / n).cos();
+        let ph = f64::from(std::f32::consts::TAU * freq) * i as f64 / f64::from(rate);
+        re += w * f64::from(v) * ph.cos();
+        im += w * f64::from(v) * ph.sin();
+        wsum += w;
+    }
+    (2.0 * (re * re + im * im).sqrt() / wsum) as f32
+}
+
+/// Media 1 and 2 are real 2 s clips with a 1 kHz tone track (the fake
+/// video backend draws their frames). The edit, 2.5 s: media 1 for 1 s,
+/// media 2 for 1 s, media 1 for 0.5 s. Media 1 has clip audio on when
+/// `clip_audio`; media 2 never.
+fn tone_project(clip_audio: bool) -> Project {
+    let mut p = project(vec![
+        cut(1, 200_000, 1_000_000),
+        cut(2, 200_000, 1_000_000),
+        cut(1, 1_000_000, 500_000),
+    ]);
+    for item in &mut p.media {
+        let path = kv_testkit::tagged_clip(&kv_testkit::ClipSpec {
+            clip: item.id.0 as u8,
+            audio: true,
+            audio_hz: 1_000,
+            file_name: Some(format!("clip{}.mp4", item.id.0)),
+            ..kv_testkit::ClipSpec::default()
+        });
+        item.path = path.to_str().unwrap().to_string();
+    }
+    p.media[0].clip_audio = clip_audio;
+    p
+}
+
+const TONE_LEN: Micros = Micros(2_500_000);
+
+/// What export mixes for [`tone_project`]: media 1's clip audio alone.
+fn tone_clip_audio(project: &Project) -> PcmAudio {
+    let sources = [kv_audio::ClipAudioSource {
+        media_id: MediaId(1),
+        path: project.media[0].path.clone().into(),
+    }];
+    let opts = kv_audio::ClipAudioOptions {
+        sample_rate: AUDIO_RATE,
+        channels: 1,
+        length: TONE_LEN,
+    };
+    kv_audio::render_clip_audio(&project.sections[0].edit, &sources, &opts).unwrap()
+}
+
+fn ms(t: usize) -> usize {
+    t * AUDIO_RATE as usize / 1_000
+}
+
+#[test]
+fn clip_audio_plays_its_tone_exactly_inside_its_segments() {
+    let mut project = tone_project(true);
+    let rig = AudioRig::build(&project, tone_clip_audio(&project));
+    rig.engine.play();
+    let got = rig.pull(2_500);
+    assert_eq!(got.len(), ms(2_500));
+    // Media 1, past its 10 ms fades: the tone at full level.
+    for (a, b) in [(10, 990), (2_010, 2_490)] {
+        let level = tone_level(&got[ms(a)..ms(b)], 1_000.0, AUDIO_RATE);
+        assert!(level > 0.9 * TONE, "[{a}, {b}) ms: {level}");
+    }
+    // Media 2 (clip audio off) and no music: nothing at all.
+    assert!(got[ms(1_000)..ms(2_000)].iter().all(|s| *s == 0.0));
+    // The same samples export mixes.
+    assert_eq!(got, rig.bed.samples);
+
+    // Clip audio off: silence everywhere (there is no music).
+    project.media[0].clip_audio = false;
+    rig.engine
+        .set_edit(&project, Project::DEFAULT_SECTION)
+        .unwrap();
+    assert!(rig.engine.wait_for_audio(WAIT));
+    rig.engine.seek(Micros(0));
+    rig.engine.play();
+    assert!(rig.pull(2_500).iter().all(|s| *s == 0.0));
+}
+
+#[test]
+fn clip_audio_swaps_in_while_playing_and_volume_scales_only_the_music() {
+    let music = kv_testkit::click_track(120.0, 3.0, AUDIO_RATE);
+    let mut project = tone_project(false);
+    project.sections[0].music = Some(MusicRef {
+        path: music.to_str().unwrap().to_string(),
+        duration: Micros(3_000_000),
+    });
+    project.settings.music_volume_percent = 50;
+    let mut opts = MusicBedOptions::new(AUDIO_RATE, 1, TONE_LEN);
+    opts.fade_out = crate::MUSIC_FADE_OUT;
+    let bed = render_music_bed(&music, &opts).unwrap();
+    let clip = tone_clip_audio(&project);
+    let rig = AudioRig::build(&project, bed);
+    let close = |got: &[f32], want: &dyn Fn(usize) -> f32, from: usize| {
+        for (i, g) in got.iter().enumerate() {
+            let w = want(from + i);
+            assert!((g - w).abs() < 1e-6, "frame {}: {g} vs {w}", from + i);
+        }
+    };
+
+    // Music only, at half volume (live transport gain).
+    rig.engine.play();
+    let got = rig.pull(300);
+    close(&got, &|k| rig.bed.samples[k] * 0.5, 0);
+
+    // Clip audio on while playing: the mix replaces the bed with no jump
+    // in the clock or the bed position.
+    project.media[0].clip_audio = true;
+    rig.engine
+        .set_edit(&project, Project::DEFAULT_SECTION)
+        .unwrap();
+    assert!(rig.engine.wait_for_audio(WAIT));
+    assert!(rig.engine.is_playing());
+    assert_eq!(rig.engine.position(), Micros(300_000));
+    let got = rig.pull(400);
+    assert_eq!(rig.engine.position(), Micros(700_000));
+    close(
+        &got,
+        &|k| rig.bed.samples[k] * 0.5 + clip.samples[k],
+        ms(300),
+    );
+
+    // Volume to 100 %: only the music part gets louder.
+    project.settings.music_volume_percent = 100;
+    rig.engine
+        .set_edit(&project, Project::DEFAULT_SECTION)
+        .unwrap();
+    assert!(rig.engine.wait_for_audio(WAIT));
+    let got = rig.pull(300);
+    close(&got, &|k| rig.bed.samples[k] + clip.samples[k], ms(700));
 }
