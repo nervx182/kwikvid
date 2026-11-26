@@ -92,6 +92,24 @@ export function setViewerRect(rect) {
 }
 
 /**
+ * The preview backend in use: "webgl" (the viewer draws frames itself,
+ * js/viewer-webgl.js), "native-metal" (drawn under the webview) or "off".
+ */
+export function getPreviewBackend() {
+  return call("get_preview_backend");
+}
+
+/**
+ * URL of the newest preview frame after sequence number `after` (raw RGBA,
+ * src/webgl.rs). Windows serves custom protocols as http://<scheme>.localhost.
+ */
+export function frameUrl(after) {
+  const windows = navigator.userAgent.includes("Windows");
+  const base = windows ? "http://kvframe.localhost/latest" : "kvframe://latest";
+  return `${base}?after=${after}`;
+}
+
+/**
  * Call cb(snapshot) for every state the backend emits. Resolves to a function
  * that stops listening.
  */
