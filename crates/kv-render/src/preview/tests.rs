@@ -354,6 +354,59 @@ fn seek_shows_the_target_frame_first() {
     assert_eq!(rig.last().tag, Some(expected(17)));
 }
 
+/// Item 1 as two 1 s chapter files, `clip1.mp4` then `clip2.mp4`, cut from
+/// 0.5 s to 1.5 s: across the boundary.
+fn chaptered_project() -> Project {
+    let mut p = project(vec![cut(1, 500_000, 1_000_000)]);
+    p.media[0].duration = Micros(2_000_000);
+    p.media[0].chapters = ["clips/clip1.mp4", "clips/clip2.mp4"]
+        .map(|path| kv_core::ChapterRef {
+            path: path.into(),
+            duration: Micros(1_000_000),
+        })
+        .to_vec();
+    p
+}
+
+#[test]
+fn a_chaptered_item_plays_across_its_chapter_files() {
+    let rig = Rig::new(FakeMedia::default(), 1);
+    rig.engine
+        .set_edit(&chaptered_project(), Project::DEFAULT_SECTION)
+        .unwrap();
+    rig.engine.play();
+    for k in 0..30 {
+        rig.clock.set(pts(k));
+        assert_eq!(rig.engine.tick().unwrap(), Tick::Presented(k));
+    }
+    let tags: Vec<_> = rig.shown().iter().map(|s| s.tag).collect();
+    let want: Vec<_> = (15..30u16)
+        .map(|frame| Some(FrameTag { clip: 1, frame }))
+        .chain((0..15u16).map(|frame| Some(FrameTag { clip: 2, frame })))
+        .collect();
+    assert_eq!(tags, want);
+    let opened: Vec<PathBuf> = lock(&rig.media.opens).iter().map(|o| o.0.clone()).collect();
+    assert_eq!(
+        opened,
+        [
+            PathBuf::from("/media/clips/clip1.mp4"),
+            PathBuf::from("/media/clips/clip2.mp4")
+        ]
+    );
+
+    // The same item without chapters: its reader is reopened as a plain
+    // single-file one, so the second half shows clip 1 again.
+    let mut plain = chaptered_project();
+    plain.media[0].chapters.clear();
+    rig.engine.pause();
+    rig.engine
+        .set_edit(&plain, Project::DEFAULT_SECTION)
+        .unwrap();
+    rig.engine.seek(pts(20));
+    assert_eq!(rig.present(), 20);
+    assert_eq!(rig.last().tag, Some(FrameTag { clip: 1, frame: 35 }));
+}
+
 #[test]
 fn seek_cancels_queued_prefetch() {
     // Decoders block until the gate opens, so prefetch piles up.

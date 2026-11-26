@@ -37,8 +37,8 @@ use kv_audio::{
 };
 use kv_core::{MediaId, Micros, Project, SectionId};
 use kv_media::{
-    DecodeOptions, Encoder, ExportSettings, MediaBackend, MediaError, Rational, VideoFrame,
-    VideoReader, VideoWriter,
+    open_item_video, Chapter, DecodeOptions, Encoder, ExportSettings, MediaBackend, MediaError,
+    Rational, VideoFrame, VideoReader, VideoWriter,
 };
 
 use crate::{composite, frame_pts, overlay, plan, segment_end, source_size_for};
@@ -201,6 +201,7 @@ pub fn export(
             media_id: item.id,
             fps: video.fps,
             path,
+            chapters: Chapter::from_refs(&item.chapters, |p| resolve(media_root, p)),
             decode: DecodeOptions {
                 size: (size != (0, 0)).then_some(size),
                 apply_rotation: true,
@@ -318,7 +319,10 @@ struct Source {
     media_id: MediaId,
     /// Frame rate from the probe, for snapping and slow-mo blending.
     fps: Rational,
+    /// First file of the item (probed for `fps` and the decode size).
     path: PathBuf,
+    /// The item's chapter files; empty for a single-file item.
+    chapters: Vec<Chapter>,
     decode: DecodeOptions,
 }
 
@@ -326,21 +330,21 @@ struct Job<'a> {
     sources: &'a [Source],
     media: &'a dyn MediaBackend,
     /// Open readers, most recently used last.
-    readers: Vec<OpenReader>,
+    readers: Vec<OpenReader<'a>>,
     settings: &'a ExportSettings,
     /// The section's title card at the output size, if it has one.
     title: Option<VideoFrame>,
 }
 
-struct OpenReader {
+struct OpenReader<'a> {
     media_id: MediaId,
-    reader: Box<dyn VideoReader>,
+    reader: Box<dyn VideoReader + 'a>,
     /// The last [`FRAMES_KEPT`] frames returned, by requested time, most
     /// recent last.
     recent: Vec<(Micros, VideoFrame)>,
 }
 
-impl Job<'_> {
+impl<'a> Job<'a> {
     /// Write every frame and the audio, finish the file, return the
     /// encoder name.
     fn write_all(
@@ -439,7 +443,7 @@ impl Job<'_> {
 
     /// The open reader for `src`, opening it (and closing the least recently
     /// used one beyond [`MAX_OPEN_READERS`]) if needed.
-    fn reader(&mut self, src: &Source) -> Result<&mut OpenReader, MediaError> {
+    fn reader(&mut self, src: &Source) -> Result<&mut OpenReader<'a>, MediaError> {
         if let Some(i) = self.readers.iter().position(|r| r.media_id == src.media_id) {
             let entry = self.readers.remove(i);
             self.readers.push(entry);
@@ -447,7 +451,7 @@ impl Job<'_> {
             if self.readers.len() >= MAX_OPEN_READERS {
                 self.readers.remove(0);
             }
-            let reader = self.media.open_video(&src.path, &src.decode)?;
+            let reader = open_item_video(self.media, &src.path, &src.chapters, &src.decode)?;
             self.readers.push(OpenReader {
                 media_id: src.media_id,
                 reader,
@@ -989,5 +993,55 @@ mod tests {
         assert_eq!(audio_frames_at(Micros(1_000_000), 48_000), 48_000);
         assert_eq!(audio_frames_at(Micros(33_333), 48_000), 1_600);
         assert_eq!(audio_frames_at(Micros(-5), 48_000), 0);
+    }
+
+    #[test]
+    fn a_chaptered_item_decodes_across_its_chapter_files() {
+        // Item 1 is two 1.5 s chapters (`clip1.mp4`, `clip2.mp4`); the cut
+        // takes 1 s..2 s of it, across the boundary.
+        let mut p = project(1, &[1]);
+        p.media[0].duration = Micros(3_000_000);
+        p.media[0].chapters = ["clips/clip1.mp4", "clips/clip2.mp4"]
+            .map(|path| kv_core::ChapterRef {
+                path: path.into(),
+                duration: Micros(1_500_000),
+            })
+            .to_vec();
+        let seg = &mut p.sections[0].edit.segments[0];
+        seg.src_in = Micros(1_000_000);
+        seg.src_out = Micros(2_000_000);
+        let (media, enc) = (FakeMedia::default(), FakeEncoder::default());
+        run(&p, &media, &enc, &mut Vec::new()).unwrap();
+
+        let levels: Vec<u8> = enc
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|c| match c {
+                Call::Video { level, .. } => Some(*level),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(levels, [[10; 5], [20; 5]].concat());
+        let opened: Vec<PathBuf> = media
+            .opens
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|o| o.0.clone())
+            .collect();
+        assert_eq!(
+            opened,
+            [
+                PathBuf::from("/root/clips/clip1.mp4"),
+                PathBuf::from("/root/clips/clip2.mp4")
+            ]
+        );
+        // Chapter-local times: 1.0..1.4 s in the first file, 0..0.4 s in
+        // the second.
+        let asked = media.frame_ats.lock().unwrap().clone();
+        let want: Vec<Micros> = (10..15).chain(0..5).map(|k| Micros(k * 100_000)).collect();
+        assert_eq!(asked, want);
     }
 }
