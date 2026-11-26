@@ -249,7 +249,7 @@ fn extension_lower(path: &Path) -> Option<String> {
         .map(str::to_ascii_lowercase)
 }
 
-fn has_import_extension(path: &Path) -> bool {
+pub(crate) fn has_import_extension(path: &Path) -> bool {
     extension_lower(path).is_some_and(|e| IMPORT_EXTENSIONS.contains(&e.as_str()))
 }
 

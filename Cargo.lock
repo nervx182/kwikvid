@@ -2825,8 +2825,12 @@ name = "kv-mcp"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "dirs",
+ "kv-audio",
+ "kv-cache",
  "kv-core",
  "kv-media",
+ "kv-session",
  "rmcp",
  "serde",
  "serde_json",

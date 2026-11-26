@@ -12,7 +12,8 @@
 //! ([`JobRunner`]) through injected backends and `kv-cache`.
 //! Regenerate/re-roll lives in [`regen`], import and library thumbnails in
 //! [`import`], beat nudges of cuts ([`Session::nudge_cut`]) in `tweaks`,
-//! export in [`export`].
+//! export in [`export`], camera / SD card import (finding volumes and
+//! copying recordings into a library folder) in [`camera`].
 //!
 //! # Paths
 //!
@@ -39,6 +40,7 @@
 
 mod analysis;
 mod bundled;
+pub mod camera;
 mod error;
 pub mod export;
 mod filmstrips;
@@ -51,6 +53,10 @@ mod tweaks;
 
 pub use analysis::{AudioAnalyzer, MusicAnalyzer};
 pub use bundled::MUSIC_DIR;
+pub use camera::{
+    default_mount_roots, find_camera_volumes, list_recordings, CameraRecording, CameraVolume,
+    CopyEvent, CopyJob,
+};
 pub use error::SessionError;
 pub use export::{
     export_size, ExportEvent, ExportInput, ExportJob, ExportOptions, ExportRequest,

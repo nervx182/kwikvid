@@ -35,8 +35,10 @@ after a pin would bring back the old edit with the pin still set.
 
 ## Consequences
 
-- The CLI and MCP server still apply plain commands with no auto-rebuild;
-  they can call the same session methods or `History::apply_group` later.
+- The MCP server applies every write tool through
+  `Session::apply_and_regenerate` (#152). The CLI still applies plain
+  commands with no auto-rebuild; it can call the same session methods or
+  `History::apply_group` later.
 - Detecting manual tweaks is stateless (the edit differs from what the
   auto-edit produces for the previous constraints), so it costs one extra
   `generate` per trigger; about 12 ms for 50 clips in a debug build.
