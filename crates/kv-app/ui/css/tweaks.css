@@ -1,0 +1,45 @@
+/* Manual tweaks on the timeline (js/tweaks.js). */
+.tw-volume { display: flex; align-items: center; gap: 6px; color: var(--muted); }
+.tw-volume input { width: 110px; }
+.tw-volume-value { min-width: 3.5em; font-variant-numeric: tabular-nums; color: var(--text); }
+
+.tw-nudge { display: flex; align-items: center; gap: 4px; }
+.tw-nudge[hidden] { display: none; }
+.tw-nudge button { padding: 1px 8px; }
+.tw-nudge-label { color: var(--text); }
+.tw-hint { margin: 0; color: var(--muted); font-size: 11px; }
+
+.tl-seg { cursor: grab; }
+.tl[data-dragging="true"] .tl-seg { cursor: grabbing; }
+.tl-seg.tl-dragging { opacity: 0.5; outline: 1px dashed var(--accent); }
+.tl-audio {
+  position: absolute; left: 2px; bottom: 2px; font-size: 10px; line-height: 1;
+  padding: 2px 4px; border-radius: 3px; background: rgba(0, 0, 0, 0.6);
+}
+
+/* Same box as .tl-track; only the handles take pointer events. */
+.tl-cuts { position: absolute; left: 0; right: 0; top: 28px; height: 64px; pointer-events: none; }
+.tl-cut {
+  position: absolute; top: -4px; bottom: -4px; width: 9px; margin-left: -5px; padding: 0;
+  border: 0; border-radius: 3px; background: transparent; cursor: pointer; pointer-events: auto;
+}
+.tl-cut::after {
+  content: ""; position: absolute; left: 4px; top: 0; bottom: 0; width: 1px;
+  background: rgba(255, 255, 255, 0.25);
+}
+.tl-cut:hover::after { background: var(--accent); }
+.tl-cut[aria-pressed="true"] { background: rgba(255, 255, 255, 0.15); }
+.tl-cut[aria-pressed="true"]::after { width: 3px; left: 3px; background: var(--accent); }
+
+.tl-drop {
+  position: absolute; top: 24px; height: 72px; width: 0; margin-left: -2px;
+  border-left: 3px solid var(--accent); pointer-events: none;
+}
+
+.tw-menu {
+  position: fixed; z-index: 10; padding: 4px;
+  background: var(--pane); border: 1px solid var(--line); border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+}
+.tw-menu button { display: block; width: 100%; text-align: left; border: 0; background: transparent; }
+.tw-menu button:hover { background: var(--accent); }

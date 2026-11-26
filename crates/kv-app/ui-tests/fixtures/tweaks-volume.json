@@ -1,0 +1,110 @@
+{
+  "revision": 8,
+  "project": {
+    "version": 1,
+    "id": 1,
+    "media": [
+      {
+        "id": 1,
+        "path": "DCIM/100GOPRO/GX010001.MP4",
+        "duration": 10000000,
+        "kind": "video",
+        "hilights": [],
+        "clip_audio": false
+      },
+      {
+        "id": 2,
+        "path": "DCIM/100GOPRO/GX010002.MP4",
+        "duration": 6000000,
+        "kind": "video",
+        "hilights": [],
+        "clip_audio": false
+      },
+      {
+        "id": 3,
+        "path": "DCIM/100GOPRO/GX010003.MP4",
+        "duration": 8000000,
+        "kind": "video",
+        "hilights": [],
+        "clip_audio": false
+      }
+    ],
+    "sections": [
+      {
+        "id": 1,
+        "music": {
+          "path": "Music/song.mp3",
+          "duration": 8000000
+        },
+        "target_length": {
+          "type": "fixed",
+          "length": 8000000
+        },
+        "pins": [
+          {
+            "media_id": 3,
+            "start": 2200000,
+            "end": 2800000
+          }
+        ],
+        "excludes": [],
+        "seed": 0,
+        "edit": {
+          "segments": [
+            {
+              "media_id": 1,
+              "src_in": 1000000,
+              "src_out": 3000000,
+              "timeline_start": 0,
+              "transition": {
+                "type": "cut"
+              },
+              "speed": 100
+            },
+            {
+              "media_id": 2,
+              "src_in": 0,
+              "src_out": 2500000,
+              "timeline_start": 1500000,
+              "transition": {
+                "type": "crossfade",
+                "duration": 500000
+              },
+              "speed": 100
+            },
+            {
+              "media_id": 3,
+              "src_in": 2000000,
+              "src_out": 3000000,
+              "timeline_start": 4000000,
+              "transition": {
+                "type": "cut"
+              },
+              "speed": 50
+            },
+            {
+              "media_id": 1,
+              "src_in": 6000000,
+              "src_out": 8000000,
+              "timeline_start": 6000000,
+              "transition": {
+                "type": "cut"
+              },
+              "speed": 100
+            }
+          ]
+        },
+        "style": "cut",
+        "title": null
+      }
+    ],
+    "settings": {
+      "aspect_ratio": "landscape16x9",
+      "music_volume_percent": 40
+    }
+  },
+  "can_undo": true,
+  "can_redo": false,
+  "dirty": true,
+  "media_root": "/home/ana"
+}

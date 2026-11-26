@@ -21,7 +21,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' data: kvthumb: http://kvthumb.localhost; style-src 'self'; script-src 'self'"
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost kvframe: http://kvframe.localhost; img-src 'self' data: kvthumb: http://kvthumb.localhost; style-src 'self'; script-src 'self'"
     }
   },
   "bundle": {

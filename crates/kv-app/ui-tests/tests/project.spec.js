@@ -27,6 +27,7 @@ async function flow(mock) {
     "get_beats",
     "bundled_tracks",
     "set_viewer_rect",
+    "get_preview_backend",
     "get_transport",
   ]);
   return (await mock.commands()).map((c) => c.command).filter((c) => !quiet.has(c));

@@ -132,11 +132,19 @@ fn session_with_clips() -> Session {
 ///
 /// Clip 3's 2.2-2.8 s is pinned, so segment 2 covers a pin.
 fn timeline_edit() -> Snapshot {
+<<<<<<< HEAD
     timeline_edit_session().snapshot()
 }
 
 /// The session of [`timeline_edit`].
 fn timeline_edit_session() -> Session {
+=======
+    timeline_session().snapshot()
+}
+
+/// The session behind [`timeline_edit`].
+fn timeline_session() -> Session {
+>>>>>>> origin/main
     let mut s = session_with_clips();
     s.apply(Command::SetMusic {
         section: S,
@@ -171,6 +179,50 @@ fn timeline_edit_session() -> Session {
     s.apply(Command::ReplaceEdl { section: S, edl })
         .expect("edl");
     s
+<<<<<<< HEAD
+=======
+}
+
+/// The manual tweak fixtures (`ui/js/tweaks.js`), each one command applied
+/// to the timeline fixture (with its song analysed):
+///
+/// - `tweaks-moved`: segment 0 moved to index 2 (`MoveSegment`).
+/// - `tweaks-nudged`: cut 2 (4.0 s) nudged one beat later, to 4.5 s.
+/// - `tweaks-clip-audio`: clip 1's audio on (segments 0 and 3).
+/// - `tweaks-volume`: music volume 40%.
+fn tweaks_fixtures() -> Vec<(&'static str, Snapshot)> {
+    let mut base = timeline_session();
+    base.set_music_analysis(song().path, song_analysis());
+    let moved = base
+        .clone()
+        .apply(Command::MoveSegment {
+            section: S,
+            from: 0,
+            to: 2,
+        })
+        .expect("move segment");
+    let nudged = base.clone().nudge_cut(S, 2, 1).expect("nudge");
+    assert_eq!(
+        nudged.project.sections[0].edit.segments[2].timeline_start,
+        ms(4500)
+    );
+    let audio = base
+        .clone()
+        .apply(Command::SetClipAudio {
+            media_id: MediaId(1),
+            enabled: true,
+        })
+        .expect("clip audio");
+    let volume = base
+        .apply(Command::SetMusicVolume { percent: 40 })
+        .expect("volume");
+    vec![
+        ("tweaks-moved", moved),
+        ("tweaks-nudged", nudged),
+        ("tweaks-clip-audio", audio),
+        ("tweaks-volume", volume),
+    ]
+>>>>>>> origin/main
 }
 
 fn fixed(secs: i64) -> Command {
@@ -266,7 +318,7 @@ fn autoedit_fixtures() -> Vec<(&'static str, String)> {
 }
 
 /// - `styles-smooth`: `autoedit-ready` with the Smooth preset chosen
-///   (`SetStyle`, applied with a regenerate).
+///   (`SetStyle`, applied with a regenerate), so its edit has crossfades.
 /// - `styles-titled`: `styles-smooth` with the title "Lake day" for 3 s.
 fn styles_fixtures() -> Vec<(&'static str, String)> {
     let (music, analysis) = long_song();
@@ -290,6 +342,14 @@ fn styles_fixtures() -> Vec<(&'static str, String)> {
         )
         .expect("smooth");
     assert!(smooth.regen_error.is_none(), "{:?}", smooth.regen_error);
+    assert!(
+        s.project().sections[0]
+            .edit
+            .segments
+            .iter()
+            .any(|g| matches!(g.transition, Transition::Crossfade { .. })),
+        "Smooth gives crossfades"
+    );
     let titled = s
         .apply_and_regenerate(
             Command::SetTitleCard {
@@ -553,6 +613,9 @@ fn fixtures() -> Vec<(&'static str, Snapshot)> {
         ("music-set", music_set),
         ("music-removed", music_removed),
     ]
+    .into_iter()
+    .chain(tweaks_fixtures())
+    .collect()
 }
 
 /// Every fixture file: name and contents.

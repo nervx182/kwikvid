@@ -172,8 +172,8 @@ pub fn engine_factory(
     })
 }
 
-/// A sink that shows nothing, for builds without a preview surface yet
-/// (the WebGL fallback, #76, replaces it): the transport still works.
+/// A sink that shows nothing, for runs without a preview surface
+/// (`KV_PREVIEW=off`): the transport still works.
 pub struct NullSink;
 
 impl FrameSink for NullSink {

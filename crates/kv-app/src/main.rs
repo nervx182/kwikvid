@@ -20,11 +20,14 @@
 //!
 //! Preview (ADR 0007): the UI reports the viewer rectangle with
 //! `set_viewer_rect` and the backend chosen in [`preview::PreviewBackend`]
-//! draws there; on macOS that is the native Metal layer (`native_view`).
-//! `--preview-test-pattern` shows a moving test pattern through it. The
-//! preview engine (kv-render) plays the edit there, driven by the
-//! transport ([`transport`]); without a preview surface (non-macOS until
-//! #76) it still runs, showing nothing, so the transport works.
+//! draws there; on macOS that is the native Metal layer (`native_view`),
+//! elsewhere (or with `KV_PREVIEW=webgl`) raw frames over `kvframe://`
+//! into a WebGL2 canvas ([`webgl`]); the UI asks which with
+//! `get_preview_backend`. `--preview-test-pattern` shows a moving test
+//! pattern through it. The preview engine (kv-render) plays the edit
+//! there, driven by the transport ([`transport`]); without a preview
+//! surface (`KV_PREVIEW=off`) it still runs, showing nothing, so the
+//! transport works.
 
 // Release builds on Windows are GUI apps without a console window.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -41,6 +44,7 @@ mod preview;
 mod project;
 mod timeline;
 mod transport;
+mod webgl;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -113,6 +117,23 @@ impl EngineParts {
                 let c = CpuCompositor::new((w / 4).max(2), (h / 4).max(2))
                     .map_err(|e| e.to_string())?;
                 Ok((Box::new(c) as _, Box::new(transport::NullSink) as _))
+            },
+        ))
+    }
+}
+
+impl EngineParts {
+    /// Engines for the WebGL backend: the CPU compositor at the preview
+    /// size capped to the 960x540 proxy, drawing into `sink`.
+    fn webgl(&self, sink: webgl::WebGlSink) -> Option<transport::EngineFactory> {
+        let media = self.media.clone()?;
+        Some(transport::engine_factory(
+            media,
+            self.audio.clone(),
+            move |size| {
+                let (w, h) = webgl::capped_size(size);
+                let c = CpuCompositor::new(w, h).map_err(|e| e.to_string())?;
+                Ok((Box::new(c) as _, Box::new(sink.clone()) as _))
             },
         ))
     }
@@ -224,9 +245,27 @@ fn set_viewer_rect(
                 }
             }
         }
+        PreviewBackend::WebGl => {
+            if preview.test_pattern() {
+                let aspect = ipc::get_state(&window.state::<AppState>())?
+                    .project
+                    .settings
+                    .aspect_ratio;
+                window
+                    .state::<webgl::WebGlPreview>()
+                    .start_test_pattern_once(aspect);
+            }
+        }
         PreviewBackend::Off => {}
     }
     Ok(())
+}
+
+/// The preview backend in use, by [`PreviewBackend::name`]: `"webgl"`
+/// makes `ui/js/viewer-webgl.js` draw the frames itself.
+#[tauri::command]
+fn get_preview_backend(preview: State<'_, PreviewState>) -> &'static str {
+    preview.backend().name()
 }
 
 /// Command-line options. Unknown arguments are ignored (macOS may pass
@@ -277,8 +316,14 @@ fn main() -> anyhow::Result<()> {
         .init();
     let opts = Options::parse(std::env::args().skip(1));
 
+<<<<<<< HEAD
     library::register(tauri::Builder::default())
         .plugin(tauri_plugin_opener::init())
+=======
+    let latest_frame = Arc::new(webgl::LatestFrame::default());
+    let builder = webgl::register(tauri::Builder::default(), Arc::clone(&latest_frame));
+    library::register(builder)
+>>>>>>> origin/main
         .invoke_handler(tauri::generate_handler![
             apply,
             undo,
@@ -295,7 +340,9 @@ fn main() -> anyhow::Result<()> {
             project::quit,
             reroll,
             set_viewer_rect,
+            get_preview_backend,
             timeline::get_beats,
+            timeline::nudge_cut,
             library::import,
             library::pick_media,
             transport::play,
@@ -326,16 +373,27 @@ fn main() -> anyhow::Result<()> {
             let backend = PreviewBackend::preferred();
             tracing::info!(backend = backend.name(), "preview backend");
             if opts.preview_test_pattern && backend == PreviewBackend::Off {
-                tracing::warn!("--preview-test-pattern: no preview backend on this platform yet");
+                tracing::warn!("--preview-test-pattern: preview backend is off");
             }
             app.manage(PreviewState::new(backend, opts.preview_test_pattern));
+            let webgl = webgl::WebGlPreview::new(latest_frame);
             let transport = Arc::new(Transport::new(latencies));
             let parts = EngineParts::start();
-            if backend == PreviewBackend::Off {
-                if let Some(f) = parts.headless() {
-                    transport.set_factory(f);
+            match backend {
+                PreviewBackend::Off => {
+                    if let Some(f) = parts.headless() {
+                        transport.set_factory(f);
+                    }
                 }
+                // The test pattern, when asked for, has the canvas alone.
+                PreviewBackend::WebGl if !opts.preview_test_pattern => {
+                    if let Some(f) = parts.webgl(webgl.sink()) {
+                        transport.set_factory(f);
+                    }
+                }
+                _ => {}
             }
+            app.manage(webgl);
             app.manage(parts);
             transport.spawn_worker();
             transport.spawn_position_events(app.handle().clone());
@@ -431,6 +489,27 @@ mod tests {
         assert_eq!(conf["app"]["withGlobalTauri"], true);
         assert_eq!(conf["app"]["windows"][0]["transparent"], true);
         assert_eq!(conf["build"]["frontendDist"], "ui");
+    }
+
+    /// The page may fetch WebGL preview frames (`kvframe`, src/webgl.rs).
+    #[test]
+    fn csp_allows_frame_protocol() {
+        let conf: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let csp = conf["app"]["security"]["csp"].as_str().unwrap();
+        let connect = csp
+            .split(';')
+            .map(str::trim)
+            .find(|d| d.starts_with("connect-src"))
+            .expect("connect-src directive");
+        for src in [
+            "ipc:",
+            "http://ipc.localhost",
+            "kvframe:",
+            "http://kvframe.localhost",
+        ] {
+            assert!(connect.split(' ').any(|s| s == src), "{src} in {connect}");
+        }
     }
 
     /// `ui/js/api.js` is the only module that touches `window.__TAURI__`, so
