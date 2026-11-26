@@ -133,7 +133,7 @@ fn other_camera_folders_and_gaps() {
     fake_file(&roots.join("GP/DCIM/101GOPRO/GH020007.MP4"), 10, 0);
     // DCIM without videos: not a camera.
     fake_file(&roots.join("PHOTOS/DCIM/100PHOTO/a.jpg"), 10, 0);
-    let volumes = find_camera_volumes(&[roots.clone()]);
+    let volumes = find_camera_volumes(std::slice::from_ref(&roots));
     let names: Vec<_> = volumes
         .iter()
         .map(|v| (v.name.as_str(), v.is_gopro))
