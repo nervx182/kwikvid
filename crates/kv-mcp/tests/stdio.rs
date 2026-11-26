@@ -17,10 +17,14 @@ struct Client {
 impl Client {
     /// Spawn the server with the analysis cache in `cache`.
     fn spawn(cache: &Path) -> Self {
-        let root = std::env::temp_dir();
+        Self::spawn_in(&std::env::temp_dir(), cache)
+    }
+
+    /// Spawn the server with media root `root` and the cache in `cache`.
+    fn spawn_in(root: &Path, cache: &Path) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_kwikvid-mcp"))
             .arg("--root")
-            .arg(&root)
+            .arg(root)
             .arg("--cache")
             .arg(cache)
             .stdin(Stdio::piped())
@@ -141,11 +145,18 @@ fn handshake_list_and_call_every_tool() {
             "edit_exclude_range",
             "edit_pin_range",
             "edit_redo",
+            "edit_regenerate",
+            "edit_reroll",
+            "edit_set_target_length",
             "edit_undo",
             "edit_unexclude_range",
             "edit_unpin_range",
             "media_add",
+            "media_import",
             "media_remove",
+            "music_beats",
+            "music_clear",
+            "music_set",
             "project_state"
         ]
     );
@@ -158,6 +169,13 @@ fn handshake_list_and_call_every_tool() {
     assert_eq!(media_add["required"], json!(["path"]));
     assert!(media_add["properties"]["duration_us"].is_object());
     assert_eq!(schema("media_remove")["required"], json!(["media_id"]));
+    assert_eq!(schema("media_import")["required"], json!(["paths"]));
+    assert_eq!(schema("music_set")["required"], json!(["path"]));
+    let length = schema("edit_set_target_length");
+    for field in ["seconds", "full_song"] {
+        let doc = length["properties"][field]["description"].as_str().unwrap();
+        assert!(doc.contains("either"), "{field}: {doc}");
+    }
     for tool in [
         "edit_pin_range",
         "edit_unpin_range",
@@ -300,4 +318,48 @@ fn handshake_list_and_call_every_tool() {
     drop(c);
     assert!(cache.join("cache.sqlite").exists());
     let _ = std::fs::remove_dir_all(&cache);
+}
+
+/// FFmpeg-backed: 3 tagged clips and a click track in a temp `--root`;
+/// `media_import` the folder, `music_set`, `edit_set_target_length` 10 s,
+/// and the edit is built.
+#[test]
+fn import_music_and_target_length_build_an_edit() {
+    let root = tempfile::tempdir().unwrap();
+    let clips = root.path().join("clips");
+    std::fs::create_dir(&clips).unwrap();
+    for clip in kv_testkit::tagged_clip_set(3, 6.0) {
+        std::fs::copy(&clip, clips.join(clip.file_name().unwrap())).unwrap();
+    }
+    let song = kv_testkit::click_track(120.0, 20.0, kv_testkit::DEFAULT_SAMPLE_RATE);
+    std::fs::copy(&song, root.path().join("song.wav")).unwrap();
+    let cache = root.path().join(".cache");
+
+    let mut c = Client::spawn_in(root.path(), &cache);
+    c.initialize();
+    let r = c.call_ok("media_import", json!({"paths": ["clips"]}));
+    assert_eq!(r["added"], json!([1, 2, 3]), "{r}");
+    assert_eq!(r["skipped"], json!([]), "{r}");
+    assert_eq!(r["revision"], 1);
+
+    let r = c.call_ok("music_set", json!({"path": "song.wav"}));
+    let bpm = r["tempo_bpm"].as_f64().unwrap();
+    assert!((bpm - 120.0).abs() < 2.0, "{r}");
+    assert!(r["beats"].as_u64().unwrap() >= 35, "{r}");
+    // The default target is the full 20 s song: more than 18 s of footage.
+    assert!(r["regen_error"].is_string(), "{r}");
+
+    let r = c.call_ok("edit_set_target_length", json!({"seconds": 10}));
+    assert_eq!(r["regen_error"], Value::Null, "{r}");
+    assert!(r["edit"]["segments"].as_u64().unwrap() > 0, "{r}");
+    let len = r["edit"]["length_us"].as_i64().unwrap();
+    assert!((len - 10_000_000).abs() <= 500_000, "{r}");
+
+    let beats = c.call_ok("music_beats", json!({}));
+    assert!(beats["beats_us"].as_array().unwrap().len() >= 35, "{beats}");
+    let r = c.call_ok("edit_reroll", json!({}));
+    assert!(r["edit"]["segments"].as_u64().unwrap() > 0, "{r}");
+
+    let (is_error, text) = c.call("music_set", json!({"path": "clips/missing.wav"}));
+    assert!(is_error, "{text}");
 }

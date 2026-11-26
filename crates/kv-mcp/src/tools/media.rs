@@ -1,4 +1,4 @@
-//! Media library tools: `media_add`, `media_remove`.
+//! Media library tools: `media_add`, `media_import`, `media_remove`.
 
 use kv_core::{Command, MediaId, MediaItem, MediaKind, Micros};
 use rmcp::handler::server::wrapper::Parameters;
@@ -6,7 +6,7 @@ use rmcp::model::CallToolResult;
 use rmcp::{schemars, tool, tool_router, ErrorData};
 use serde::{Deserialize, Serialize};
 
-use super::{json_result, tool_error, WriteResult};
+use super::{json_result, relative_path, tool_error, WriteResult};
 use crate::KwikvidServer;
 
 /// Kind of media for `media_add`.
@@ -54,7 +54,75 @@ pub struct MediaRemoveParams {
     pub media_id: u64,
 }
 
+/// Input of `media_import`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct MediaImportParams {
+    /// Files and folders to import: relative to the project root (the
+    /// server's `--root`), or absolute inside it. Folders are scanned (not
+    /// recursively) for MP4 and MOV files.
+    pub paths: Vec<String>,
+}
+
+/// A file `media_import` did not add.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SkippedFile {
+    /// The file, relative to the root when it is inside it.
+    pub path: String,
+    /// Why it was skipped (already in the library, no video, ...).
+    pub reason: String,
+}
+
+/// What `media_import` returns: the import report plus the write result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ImportResult {
+    /// Ids of the new library items, in import order (one per recording:
+    /// GoPro chapter files are grouped).
+    pub added: Vec<u64>,
+    pub skipped: Vec<SkippedFile>,
+    #[serde(flatten)]
+    pub write: WriteResult,
+}
+
 impl KwikvidServer {
+    pub(crate) fn media_import_impl(
+        &self,
+        p: MediaImportParams,
+    ) -> Result<CallToolResult, ErrorData> {
+        if p.paths.is_empty() {
+            return Ok(tool_error("give at least one file or folder in paths"));
+        }
+        let root = self.root();
+        let mut abs = Vec::with_capacity(p.paths.len());
+        for path in &p.paths {
+            match relative_path(&root, path) {
+                Ok(rel) => abs.push(root.join(rel)),
+                Err(msg) => return Ok(tool_error(msg)),
+            }
+        }
+        // Probing and HiLights are cached and only read headers; the
+        // session lock is held, as `Session::import` needs it throughout.
+        let mut session = self.lock();
+        match session.import(&abs, &self.ctx) {
+            Ok((report, snapshot)) => json_result(&ImportResult {
+                added: report.added.iter().map(|id| id.0).collect(),
+                skipped: report
+                    .skipped
+                    .into_iter()
+                    .map(|(path, reason)| SkippedFile {
+                        path: path
+                            .strip_prefix(&root)
+                            .unwrap_or(&path)
+                            .to_string_lossy()
+                            .into_owned(),
+                        reason,
+                    })
+                    .collect(),
+                write: WriteResult::from_snapshot(&snapshot),
+            }),
+            Err(e) => Ok(tool_error(e.to_string())),
+        }
+    }
+
     pub(crate) fn media_add_impl(&self, p: MediaAddParams) -> Result<CallToolResult, ErrorData> {
         let path = match self.project_path(&p.path) {
             Ok(path) => path,
@@ -106,6 +174,20 @@ impl KwikvidServer {
         Parameters(p): Parameters<MediaAddParams>,
     ) -> Result<CallToolResult, ErrorData> {
         self.media_add_impl(p)
+    }
+
+    #[tool(
+        description = "Import video files and folders (MP4/MOV; folders not recursively) \
+        into the library as one undo step: each file is probed and its HiLights read \
+        (cached), and chaptered GoPro recordings (GX01xxxx, GX02xxxx, ...) become one item. \
+        Returns added (new media ids), skipped (path and reason) and the write result. \
+        It does not rebuild the edit; call edit_regenerate afterwards if music is set."
+    )]
+    fn media_import(
+        &self,
+        Parameters(p): Parameters<MediaImportParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.media_import_impl(p)
     }
 
     #[tool(
@@ -211,5 +293,98 @@ mod tests {
 
         let msg = err(server.media_remove(Parameters(MediaRemoveParams { media_id: 1 })));
         assert!(msg.contains("no longer in the project"), "{msg}");
+    }
+
+    /// Probes every file as a 4 s video.
+    struct VideoBackend;
+
+    impl kv_media::MediaBackend for VideoBackend {
+        fn probe(&self, path: &std::path::Path) -> kv_media::Result<kv_media::MediaInfo> {
+            if path.to_string_lossy().contains("bad") {
+                return Err(kv_media::MediaError::NoStreams(path.to_owned()));
+            }
+            Ok(kv_media::MediaInfo {
+                duration: Micros(4 * SEC),
+                container: "fake".into(),
+                video: Some(kv_media::VideoInfo {
+                    codec: "fake".into(),
+                    width: 320,
+                    height: 240,
+                    fps: kv_media::Rational::new(30, 1),
+                    bit_depth: 8,
+                    rotation: 0,
+                }),
+                audio: None,
+                creation_time: None,
+            })
+        }
+
+        fn open_video(
+            &self,
+            path: &std::path::Path,
+            _opts: &kv_media::DecodeOptions,
+        ) -> kv_media::Result<Box<dyn kv_media::VideoReader>> {
+            Err(kv_media::MediaError::NoVideoStream(path.to_owned()))
+        }
+    }
+
+    fn import(paths: &[&str]) -> MediaImportParams {
+        MediaImportParams {
+            paths: paths.iter().map(|p| (*p).to_owned()).collect(),
+        }
+    }
+
+    #[test]
+    fn media_import_groups_chapters_into_one_item() {
+        let dir = tempfile::tempdir().unwrap();
+        let clips = dir.path().join("clips");
+        std::fs::create_dir(&clips).unwrap();
+        for name in [
+            "GX010001.MP4",
+            "GX020001.MP4",
+            "GX010001.LRV",
+            "bad.mp4",
+            "notes.txt",
+        ] {
+            std::fs::write(clips.join(name), name).unwrap();
+        }
+        let server = KwikvidServer::new(dir.path().to_owned(), ctx(Arc::new(VideoBackend)));
+
+        let r = ok(server.media_import_impl(import(&["clips"])));
+        assert_eq!(r["added"], serde_json::json!([1]), "{r}");
+        let skipped = r["skipped"].as_array().unwrap();
+        assert_eq!(skipped.len(), 1, "{r}");
+        assert!(
+            skipped[0]["path"].as_str().unwrap().ends_with("bad.mp4"),
+            "{r}"
+        );
+        assert!(skipped[0]["reason"].is_string(), "{r}");
+        assert_eq!(r["revision"], 1);
+        assert_eq!(r["can_undo"], true);
+        assert_eq!(r["edit"]["segments"], 0);
+        let p = server.project();
+        assert_eq!(p.media.len(), 1);
+        assert_eq!(p.media[0].path, "clips/GX010001.MP4");
+        assert_eq!(p.media[0].chapters.len(), 2);
+        assert_eq!(p.media[0].duration, Micros(8 * SEC));
+
+        // Again: everything is already in the library; no undo step.
+        let r = ok(server.media_import_impl(import(&["clips/GX020001.MP4"])));
+        assert_eq!(r["added"], serde_json::json!([]));
+        assert_eq!(r["skipped"][0]["reason"], "Already in the library.");
+        assert_eq!(r["revision"], 1);
+
+        // One undo step removes the whole import.
+        server.lock().undo().unwrap();
+        assert!(server.project().media.is_empty());
+    }
+
+    #[test]
+    fn media_import_refuses_paths_outside_the_root() {
+        let server = server_with(Arc::new(VideoBackend));
+        let msg = err(server.media_import_impl(import(&["ok.mp4", "../up"])));
+        assert!(msg.contains(".."), "{msg}");
+        err(server.media_import_impl(import(&[])));
+        assert_eq!(server.snapshot().revision, 0);
     }
 }
