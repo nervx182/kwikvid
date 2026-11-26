@@ -292,6 +292,7 @@ fn main() -> anyhow::Result<()> {
             reroll,
             set_viewer_rect,
             timeline::get_beats,
+            timeline::nudge_cut,
             library::import,
             library::pick_media,
             transport::play,
