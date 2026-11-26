@@ -44,5 +44,11 @@ kv-testkit = { path = "../kv-testkit", features = ["video"] }
 # Same version and features as kv-media; reads the exported stream lengths.
 ffmpeg-next = { version = "9.1", default-features = false, features = ["codec", "format", "software-scaling"] }
 
+# 60 s 1080p export time vs the Roadmap I target (issue #147); a timed loop,
+# not criterion (see the bench's docs). Regression `benchmarks` job only.
+[[bench]]
+name = "export"
+harness = false
+
 [lints]
 workspace = true
