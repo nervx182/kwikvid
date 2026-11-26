@@ -164,6 +164,9 @@ pub struct GpuCompositor {
     /// Released textures, reusable by size.
     free: HashMap<(u32, u32), Vec<Source>>,
     next_id: u64,
+    /// Overlay images uploaded once for the live preview
+    /// ([`crate::preview::PreviewCompositor::set_overlay`]).
+    pub(crate) preview_overlays: HashMap<crate::OverlayId, TextureId>,
 }
 
 impl GpuCompositor {
@@ -237,6 +240,7 @@ impl GpuCompositor {
             live: HashMap::new(),
             free: HashMap::new(),
             next_id: 0,
+            preview_overlays: HashMap::new(),
         };
         compositor.pipeline(OUTPUT_FORMAT, false);
         Ok(compositor)
