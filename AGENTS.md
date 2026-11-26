@@ -82,6 +82,13 @@ Slow tests, tests on real footage and benchmarks run only in
 - Benchmarks are criterion benches (`benches/*.rs`, `harness = false`) and
   run on macOS arm64 in the `benchmarks` job; results are uploaded as the
   `criterion-<run id>` artifact.
+- A benchmark that checks a roadmap target prints exactly one line per case
+  on stdout: `TARGET <name> <measured_ms> <target_ms>`, for example
+  `TARGET regenerate-50-clips 41.2 300` (`<name>` without spaces, times in
+  milliseconds). The `benchmarks` job turns these into the "Performance
+  targets" table of its summary (pass when measured <= target; reported,
+  never failing the job). Examples: `crates/kv-session/benches/regenerate.rs`,
+  `crates/kv-render/benches/export.rs`.
 - Dispatch: Actions tab > regression > Run workflow, or
   `gh workflow run regression.yml --ref <branch> -f suite=all`
   (`suite`: `all`, `platforms`, `performance`, ...). When a job fails, the
