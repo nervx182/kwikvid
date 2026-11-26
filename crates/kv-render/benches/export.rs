@@ -23,8 +23,9 @@
 //!
 //! One export takes seconds, so this is a plain timed loop instead of
 //! criterion (whose minimum of 10 samples would take minutes per case): each
-//! case runs [`RUNS`] exports and reports the minimum and the median, which
-//! keeps the whole bench well under 10 minutes on the Mac runner. The first
+//! case runs [`RUNS`] exports and reports the minimum and the median (of the
+//! runs done: a case stops early once its runs took [`CASE_BUDGET`]), which
+//! keeps the whole bench under about 10 minutes on the Mac runner. The first
 //! run includes opening the decoders cold, like a user's export.
 //!
 //! # Output
@@ -63,6 +64,10 @@ use kv_testkit::{click_track, tagged_clip, ClipSpec};
 const TARGET: Duration = Duration::from_secs(20);
 /// Exports per case.
 const RUNS: usize = 3;
+/// No further run of a case starts once its runs took this long in total,
+/// so a very slow case (4K HEVC on a CPU-only decode) cannot push the bench
+/// past ~10 minutes.
+const CASE_BUDGET: Duration = Duration::from_secs(180);
 /// Length of the exported edit.
 const EDIT_SECONDS: f64 = 60.0;
 /// Media items (and segments, at least) per edit.
@@ -200,6 +205,9 @@ fn bench_case(backend: &FfmpegBackend, label: &str, project: &Project) {
         );
         times.push(took);
         last = Some(report);
+        if times.iter().sum::<Duration>() >= CASE_BUDGET {
+            break;
+        }
     }
     let _ = std::fs::remove_file(&out);
     let report = last.expect("RUNS > 0");
@@ -207,8 +215,10 @@ fn bench_case(backend: &FfmpegBackend, label: &str, project: &Project) {
     let (min, median, max) = (times[0], times[times.len() / 2], times[times.len() - 1]);
     let segments = project.sections[0].edit.segments.len();
     println!(
-        "export/{label} min/median/max over {RUNS} runs ({} frames, {segments} segments, encoder {})",
-        report.frames, report.encoder_name
+        "export/{label} min/median/max over {} runs ({} frames, {segments} segments, encoder {})",
+        times.len(),
+        report.frames,
+        report.encoder_name
     );
     println!(
         "                        time:   [{:.1} ms {:.1} ms {:.1} ms]  target {:.0} ms: median {}",
@@ -344,11 +354,14 @@ fn hevc10_clip() -> Result<PathBuf, String> {
     Ok(path)
 }
 
+/// An encoder to try: name, input pixel format, private options.
+type Candidate = (&'static str, ff::format::Pixel, Vec<(&'static str, String)>);
+
 /// Open the first usable 10-bit HEVC encoder.
 fn open_hevc_encoder(global_header: bool) -> Result<(ff::Codec, ff::encoder::Video), String> {
     use ff::format::Pixel;
     let keyint = HEVC_GOP.to_string();
-    let candidates: [(&str, Pixel, Vec<(&str, String)>); 2] = [
+    let candidates: [Candidate; 2] = [
         (
             "libx265",
             Pixel::YUV420P10LE,
