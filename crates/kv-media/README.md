@@ -66,7 +66,10 @@ threading. Hardware frames are copied to system memory (NV12, or P010 for
 rotation, colour matrix and range are handled identically and the frames
 are the same RGBA8 `VideoFrame`s.
 
-If the hardware path fails at any point (no VideoToolbox device, a codec or
+The reader first asks VideoToolbox (`VTIsHardwareDecodeSupported`) whether
+this Mac has a hardware decoder for the codec; a virtualised Mac usually has
+none and decodes on the CPU without trying (and without FFmpeg printing
+hwaccel errors). If the hardware path fails at any point (no VideoToolbox device, a codec or
 profile it cannot decode, an error mid-stream) the reader logs it once at
 `debug` and continues on the CPU with no error to the caller: a failure on
 the first frame reopens the file on the CPU (the first frame is decoded

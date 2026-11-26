@@ -669,13 +669,36 @@ mod videotoolbox {
     /// Hardware decode is implemented on this platform.
     pub(super) const SUPPORTED: bool = true;
 
+    /// `kCMVideoCodecType_H264` ('avc1').
+    const CODEC_TYPE_H264: u32 = u32::from_be_bytes(*b"avc1");
+    /// `kCMVideoCodecType_HEVC` ('hvc1').
+    const CODEC_TYPE_HEVC: u32 = u32::from_be_bytes(*b"hvc1");
+
+    // VideoToolbox is a system framework (FFmpeg's hwaccel links it too), so
+    // this adds no dependency.
+    #[link(name = "VideoToolbox", kind = "framework")]
+    extern "C" {
+        /// `Boolean VTIsHardwareDecodeSupported(CMVideoCodecType)`.
+        fn VTIsHardwareDecodeSupported(codec_type: u32) -> u8;
+    }
+
     /// Create a VideoToolbox device and attach it, with a `get_format`
     /// callback that picks `AV_PIX_FMT_VIDEOTOOLBOX`, to the (not yet
     /// opened) decoder context. Only H.264 and HEVC are attempted.
     pub(super) fn attach(ctx: &mut ff::codec::Context) -> Result<(), String> {
         let id = ctx.id();
-        if !matches!(id, ff::codec::Id::H264 | ff::codec::Id::HEVC) {
-            return Err(format!("no hardware decode for {id:?}"));
+        let codec_type = match id {
+            ff::codec::Id::H264 => CODEC_TYPE_H264,
+            ff::codec::Id::HEVC => CODEC_TYPE_HEVC,
+            _ => return Err(format!("no hardware decode for {id:?}")),
+        };
+        // Ask first: without a hardware decoder (a virtualised Mac, for
+        // example) FFmpeg's hwaccel init fails and FFmpeg logs that at error
+        // level on stderr before it falls back on its own.
+        // SAFETY: a plain query of a system framework function, available
+        // since macOS 10.13, with no pointers involved.
+        if unsafe { VTIsHardwareDecodeSupported(codec_type) } == 0 {
+            return Err(format!("this Mac has no hardware {id:?} decoder"));
         }
         // SAFETY: `avcodec_find_decoder` returns a pointer to a static codec
         // descriptor or null; `avcodec_get_hw_config` returns a pointer to a
