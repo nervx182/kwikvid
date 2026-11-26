@@ -8,6 +8,7 @@ use std::sync::Mutex as StdMutex;
 
 use kv_audio::{render_music_bed, MusicBedOptions, PcmAudio};
 use kv_core::{MediaItem, MediaKind, MusicRef, ProjectId, Segment, Speed, Transition};
+
 use kv_media::{MediaInfo, VideoInfo};
 use kv_testkit::{read_frame_tag, render_tagged_frame, FrameTag};
 
@@ -632,6 +633,252 @@ fn gpu_compositor_presents_textures() {
     assert_eq!(shown.len(), 2);
     assert_eq!(shown[0].pts, pts(30));
     assert!(shown.iter().all(|s| s.size == (W, H)));
+}
+
+// ---- Title card: drawn over the opening frames, like export.
+
+/// Keeps every presented CPU frame.
+#[derive(Clone, Default)]
+struct FrameRecorder(Arc<StdMutex<Vec<VideoFrame>>>);
+
+impl FrameSink for FrameRecorder {
+    fn present(&mut self, frame: &RenderedFrame<'_>) {
+        if let RenderedFrame::Cpu(f) = frame {
+            lock(&self.0).push((*f).clone());
+        }
+    }
+}
+
+/// A [`CpuCompositor`] counting the overlay images it is given.
+struct CountingCompositor {
+    inner: CpuCompositor,
+    sets: Arc<AtomicU64>,
+}
+
+impl PreviewCompositor for CountingCompositor {
+    fn size(&self) -> (u32, u32) {
+        self.inner.size()
+    }
+    fn set_overlay(
+        &mut self,
+        id: OverlayId,
+        image: Option<&VideoFrame>,
+    ) -> Result<(), PreviewError> {
+        self.sets.fetch_add(1, Ordering::SeqCst);
+        self.inner.set_overlay(id, image)
+    }
+    fn render_with_overlays(
+        &mut self,
+        pts: Micros,
+        layers: &[(&VideoFrame, f32)],
+        overlays: &[Overlay],
+        fit: Fit,
+    ) -> Result<RenderedFrame<'_>, PreviewError> {
+        self.inner.render_with_overlays(pts, layers, overlays, fit)
+    }
+}
+
+struct TitleRig {
+    engine: PreviewEngine,
+    clock: Arc<ManualClock>,
+    frames: FrameRecorder,
+    sets: Arc<AtomicU64>,
+}
+
+impl TitleRig {
+    fn new() -> TitleRig {
+        let clock = Arc::new(ManualClock::new());
+        let frames = FrameRecorder::default();
+        let sets = Arc::new(AtomicU64::new(0));
+        let engine = PreviewEngine::new(
+            Arc::new(FakeMedia::default()),
+            Box::new(CountingCompositor {
+                inner: CpuCompositor::new(W, H).unwrap(),
+                sets: Arc::clone(&sets),
+            }),
+            Box::new(frames.clone()),
+            PreviewConfig {
+                fps: FPS,
+                media_root: PathBuf::from("/media"),
+                decode_threads: 2,
+                max_wait: WAIT,
+                clock: clock.clone(),
+                ..PreviewConfig::default()
+            },
+        )
+        .unwrap();
+        TitleRig {
+            engine,
+            clock,
+            frames,
+            sets,
+        }
+    }
+
+    /// Show `p` and return the presented frame at index `k` (paused).
+    fn frame(&self, p: &Project, k: u64) -> VideoFrame {
+        self.engine.set_edit(p, Project::DEFAULT_SECTION).unwrap();
+        self.engine.seek(pts(k));
+        self.tick_presented(k)
+    }
+
+    fn tick_presented(&self, k: u64) -> VideoFrame {
+        for _ in 0..100 {
+            if let Tick::Presented(i) = self.engine.tick().unwrap() {
+                assert_eq!(i, k);
+                return lock(&self.frames.0).last().unwrap().clone();
+            }
+        }
+        panic!("nothing presented");
+    }
+
+    fn sets(&self) -> u64 {
+        self.sets.load(Ordering::SeqCst)
+    }
+}
+
+/// [`three_segments`] with a 1 s title `text` (or none).
+fn titled(text: Option<&str>) -> Project {
+    let mut p = three_segments();
+    p.sections[0].title = text.map(|t| TitleCard {
+        text: t.into(),
+        duration: Micros(1_000_000),
+    });
+    p
+}
+
+/// Centre pixels of `titled` that are bright (text) and differ from `plain`.
+fn title_pixels(titled: &VideoFrame, plain: &VideoFrame) -> usize {
+    let mut n = 0;
+    for y in H as usize / 3..2 * H as usize / 3 {
+        for x in W as usize / 10..9 * W as usize / 10 {
+            let i = (y * W as usize + x) * 4;
+            let (t, p) = (&titled.data[i..i + 3], &plain.data[i..i + 3]);
+            if t.iter().all(|&c| c > 200) && t != p {
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
+#[test]
+fn title_is_drawn_over_the_opening_frames_only() {
+    let rig = TitleRig::new();
+    // Frame 15 (0.5 s): fully shown; frame 45 (1.5 s): after the title.
+    let with = [15, 45].map(|k| rig.frame(&titled(Some("Summer")), k));
+    assert_eq!(rig.sets(), 1);
+    // Same text, other duration: not rasterised again.
+    let mut longer = titled(Some("Summer"));
+    longer.sections[0].title.as_mut().unwrap().duration = Micros(2_000_000);
+    rig.frame(&longer, 0);
+    assert_eq!(rig.sets(), 1);
+    let without = [15, 45].map(|k| rig.frame(&titled(None), k));
+    assert_eq!(rig.sets(), 2);
+    let n = title_pixels(&with[0], &without[0]);
+    assert!(n > 40, "{n} title pixels");
+    assert_eq!(with[1], without[1], "frames after the title are unchanged");
+    // Frame 0 is at fade opacity 0: the footage, with its tag readable.
+    let first = rig.frame(&titled(Some("Summer")), 0);
+    assert_eq!(read_frame_tag(&first.data, W, H), Some(expected(0)));
+    assert_eq!(rig.sets(), 3);
+}
+
+#[test]
+fn changing_the_title_while_playing_updates_the_next_frame() {
+    let rig = TitleRig::new();
+    let plain = rig.frame(&titled(None), 15);
+    assert_eq!(rig.sets(), 0);
+    rig.engine
+        .set_edit(&titled(Some("Summer")), Project::DEFAULT_SECTION)
+        .unwrap();
+    rig.engine.seek(Micros(0));
+    rig.engine.play();
+    for k in 0..15 {
+        rig.clock.set(pts(k));
+        assert_eq!(rig.engine.tick().unwrap(), Tick::Presented(k));
+    }
+    rig.clock.set(pts(15));
+    let summer = rig.tick_presented(15);
+    assert!(title_pixels(&summer, &plain) > 40);
+
+    // New text: the same frame is redrawn with it on the next tick.
+    rig.engine
+        .set_edit(&titled(Some("Winter")), Project::DEFAULT_SECTION)
+        .unwrap();
+    let winter = rig.tick_presented(15);
+    assert!(title_pixels(&winter, &plain) > 40);
+    assert_ne!(winter, summer);
+
+    // Cleared: back to the plain footage.
+    rig.engine
+        .set_edit(&titled(None), Project::DEFAULT_SECTION)
+        .unwrap();
+    assert_eq!(rig.tick_presented(15), plain);
+    assert!(rig.engine.is_playing());
+    assert_eq!(rig.sets(), 3);
+}
+
+#[cfg(feature = "gpu")]
+#[test]
+fn gpu_preview_title_matches_cpu() {
+    use crate::gpu::{GpuCompositor, GpuContext, WgpuContext};
+    let ctx = match WgpuContext::headless() {
+        Ok(c) => c,
+        Err(e) => {
+            println!("SKIPPED: no GPU adapter ({e})");
+            return;
+        }
+    };
+    let footage = VideoFrame::new_rgba(
+        Micros(0),
+        W,
+        H,
+        render_tagged_frame(FrameTag { clip: 2, frame: 7 }, W, H),
+    )
+    .unwrap();
+    let card = TitleCard {
+        text: "Summer".into(),
+        duration: Micros(1_000_000),
+    };
+    let image = title::rasterize(&card, W, H);
+    let mut cpu = CpuCompositor::new(W, H).unwrap();
+    let mut gpu = GpuCompositor::new(&ctx, W, H).unwrap();
+    cpu.set_overlay(OverlayId::Title, Some(&image)).unwrap();
+    gpu.set_overlay(OverlayId::Title, Some(&image)).unwrap();
+    let textures = gpu.texture_count();
+    for opacity in [1.0, 0.5, 0.0] {
+        let overlays = [Overlay {
+            id: OverlayId::Title,
+            opacity,
+        }];
+        let layers = [(&footage, 1.0)];
+        let want = match cpu
+            .render_with_overlays(Micros(5), &layers, &overlays, Fit::Fill)
+            .unwrap()
+        {
+            RenderedFrame::Cpu(f) => f.clone(),
+            RenderedFrame::Gpu { .. } => unreachable!(),
+        };
+        PreviewCompositor::render_with_overlays(&mut gpu, Micros(5), &layers, &overlays, Fit::Fill)
+            .unwrap();
+        let got = gpu.read_back().unwrap();
+        let max = got
+            .data
+            .iter()
+            .zip(&want.data)
+            .map(|(a, b)| a.abs_diff(*b))
+            .max()
+            .unwrap();
+        assert!(max <= 3, "opacity {opacity}: max channel difference {max}");
+        if opacity == 1.0 {
+            assert!(title_pixels(&want, &footage) > 40);
+        }
+    }
+    // The title texture was uploaded once: frames reuse it.
+    assert_eq!(gpu.texture_count(), textures + 1);
+    gpu.set_overlay(OverlayId::Title, None).unwrap();
+    assert!(gpu.preview_overlays.is_empty());
 }
 
 // ---- Audio: the music bed plays in sync and the device clock drives video.
