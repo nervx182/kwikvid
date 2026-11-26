@@ -132,6 +132,11 @@ fn session_with_clips() -> Session {
 ///
 /// Clip 3's 2.2-2.8 s is pinned, so segment 2 covers a pin.
 fn timeline_edit() -> Snapshot {
+    timeline_edit_session().snapshot()
+}
+
+/// The session of [`timeline_edit`].
+fn timeline_edit_session() -> Session {
     let mut s = session_with_clips();
     s.apply(Command::SetMusic {
         section: S,
@@ -164,7 +169,8 @@ fn timeline_edit() -> Snapshot {
     };
     edl.repack();
     s.apply(Command::ReplaceEdl { section: S, edl })
-        .expect("edl")
+        .expect("edl");
+    s
 }
 
 fn fixed(secs: i64) -> Command {
@@ -559,7 +565,55 @@ fn all_fixtures() -> Vec<(&'static str, String)> {
     all.extend(autoedit_fixtures());
     all.extend(inspector_fixtures());
     all.extend(styles_fixtures());
+    all.extend(export_fixtures());
     all
+}
+
+/// The export dialog's fixtures: the timeline edit switched to 9:16 (what
+/// `SetAspectRatio` returns), `export_options` answers and a finished
+/// export's `kv://export` update.
+fn export_fixtures() -> Vec<(&'static str, String)> {
+    use kv_core::AspectRatio;
+    use kv_media::VideoCodec;
+    use kv_session::{ExportEvent, ExportOptions, ExportResolution, ExportSummary, ExportUpdate};
+    let mut s = timeline_edit_session();
+    // The fixture's clips do not exist on this machine: the real blocker.
+    let blocked = s.export_blocker(S);
+    assert!(blocked.is_some(), "fixture media should be missing");
+    let options = |codecs: Vec<VideoCodec>, blocked: Option<String>| ExportOptions {
+        codecs,
+        aspect: AspectRatio::Landscape16x9,
+        resolution: ExportResolution::Hd1080,
+        file_name: format!("{}.mp4", s.project_name()),
+        blocked,
+    };
+    let all = options(vec![VideoCodec::H264, VideoCodec::Hevc], None);
+    let h264 = options(vec![VideoCodec::H264], None);
+    let missing = options(vec![VideoCodec::H264, VideoCodec::Hevc], blocked);
+    let done = ExportUpdate {
+        id: 1,
+        event: ExportEvent::Done {
+            report: ExportSummary {
+                path: PathBuf::from("/home/ana/Movies/Untitled.mp4"),
+                frames: 240,
+                duration: Micros(8 * SEC),
+                encoder_name: "h264_videotoolbox".into(),
+                elapsed_ms: 12_345,
+            },
+        },
+    };
+    let portrait = s
+        .apply(Command::SetAspectRatio {
+            aspect: AspectRatio::Portrait9x16,
+        })
+        .expect("aspect");
+    vec![
+        ("export-options", render(&all)),
+        ("export-options-h264", render(&h264)),
+        ("export-options-missing", render(&missing)),
+        ("export-done", render(&done)),
+        ("export-portrait", render(&portrait)),
+    ]
 }
 
 fn fixture_dir() -> PathBuf {

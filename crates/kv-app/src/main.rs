@@ -6,7 +6,9 @@
 //! `get_beats`, the library's `import` and `pick_media`; the transport's
 //! `play`, `pause`, `seek`, `get_transport` and `get_preview_stats`, see
 //! [`transport`]; the music picker's `bundled_tracks`, `pick_music` and
-//! `analyze_music`, see [`music`]). Each forwards to the
+//! `analyze_music`, see [`music`]; the export dialog's `export_options`,
+//! `choose_export_path`, `start_export`, `cancel_export` and
+//! `reveal_export`, see [`export`]). Each forwards to the
 //! session (see [`ipc`]); after every change the backend emits a `kv://state`
 //! event with the new snapshot. Errors come back as `{ "message": "..." }`.
 //! Project files (New, Open, Save, Save As, recent) are in [`project`]; the
@@ -28,6 +30,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod blit;
+mod export;
 mod ipc;
 mod library;
 mod menu;
@@ -275,6 +278,7 @@ fn main() -> anyhow::Result<()> {
     let opts = Options::parse(std::env::args().skip(1));
 
     library::register(tauri::Builder::default())
+        .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             apply,
             undo,
@@ -301,7 +305,12 @@ fn main() -> anyhow::Result<()> {
             transport::get_preview_stats,
             music::bundled_tracks,
             music::pick_music,
-            music::analyze_music
+            music::analyze_music,
+            export::export_options,
+            export::choose_export_path,
+            export::start_export,
+            export::cancel_export,
+            export::reveal_export
         ])
         .setup(move |app| {
             let root = media_root(app.handle());
@@ -310,6 +319,7 @@ fn main() -> anyhow::Result<()> {
             // Before the library's job event thread starts, which reads it.
             app.manage(music::MusicPicks::default());
             app.manage(library::Library::start(app.handle()));
+            app.manage(export::Exports::start());
             let files = ProjectFiles::load(app.path().app_config_dir().ok());
             app.set_menu(menu::build(app.handle(), &files.recent())?)?;
             app.manage(files);

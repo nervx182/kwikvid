@@ -240,6 +240,15 @@ impl ExportEvent {
     }
 }
 
+/// An [`ExportEvent`] with the id of its export, as the app emits it
+/// (`kv://export`): `{"id":1,"state":"progress",...}`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExportUpdate {
+    pub id: u64,
+    #[serde(flatten)]
+    pub event: ExportEvent,
+}
+
 /// Time left, assuming the remaining frames take as long as the done ones
 /// on average; `None` before the first frame.
 pub fn eta(elapsed: Duration, frame: u64, total_frames: u64) -> Option<Duration> {

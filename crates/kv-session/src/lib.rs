@@ -47,7 +47,7 @@ pub use analysis::{AudioAnalyzer, MusicAnalyzer};
 pub use error::SessionError;
 pub use export::{
     export_size, ExportEvent, ExportInput, ExportJob, ExportOptions, ExportRequest,
-    ExportResolution, ExportSummary, EXPORT_FPS,
+    ExportResolution, ExportSummary, ExportUpdate, EXPORT_FPS,
 };
 pub use filmstrips::{
     FilmstripGenerator, MediaFilmstrips, FILMSTRIP_COUNT, FILMSTRIP_HEIGHT, FILMSTRIP_JPEG_QUALITY,
