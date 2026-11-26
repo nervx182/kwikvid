@@ -130,6 +130,7 @@ impl Session {
 
         tracing::info!(file = %file.display(), "project saved as");
         self.thumbnails.rebase(&self.media_root, &dir);
+        self.music.rebase(&self.media_root, &dir);
         self.saved = history.project().clone();
         self.history = history;
         self.media_root = dir;
