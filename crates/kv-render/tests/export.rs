@@ -2,6 +2,7 @@
 //! FFmpeg backend, then the MP4 is decoded and every frame identified by its
 //! tag (`kv_testkit::read_clip_tags`).
 
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 
 use ffmpeg_next as ff;
@@ -115,7 +116,10 @@ fn exports_tagged_edit_with_crossfade_and_music() {
         &backend,
         &out,
         &settings(),
-        &mut |p| progress.push(p),
+        &mut |p| {
+            progress.push(p);
+            ControlFlow::Continue(())
+        },
     )
     .unwrap();
     println!("{report:?}");
@@ -252,7 +256,7 @@ fn slow_motion_blends_in_between_frames() {
         &backend,
         &out,
         &settings(),
-        &mut |_| {},
+        &mut |_| ControlFlow::Continue(()),
     )
     .unwrap();
     assert_eq!(report.frames, 60);
@@ -315,7 +319,7 @@ fn missing_source_fails_before_creating_the_output() {
         &backend,
         &out,
         &settings(),
-        &mut |_| {},
+        &mut |_| ControlFlow::Continue(()),
     )
     .unwrap_err();
     assert!(
@@ -457,7 +461,7 @@ fn clip_audio_is_mixed_under_the_music_following_the_edit() {
             &backend,
             &out,
             &settings(),
-            &mut |_| {},
+            &mut |_| ControlFlow::Continue(()),
         )
         .unwrap();
         decode_audio_channel0(&out)
@@ -603,7 +607,7 @@ fn title_card_is_drawn_over_the_opening_frames() {
             &backend,
             &out,
             &settings(),
-            &mut |_| {},
+            &mut |_| ControlFlow::Continue(()),
         )
         .unwrap();
         assert_eq!(report.frames, 45);

@@ -1,0 +1,10 @@
+{
+  "codecs": [
+    "H264",
+    "hevc"
+  ],
+  "aspect": "landscape16x9",
+  "resolution": "1080p",
+  "file_name": "Untitled.mp4",
+  "blocked": "3 clips in the edit are missing. Relink or remove them to export."
+}

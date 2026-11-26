@@ -29,6 +29,8 @@ serde.workspace = true
 # macos-private-api: transparent webview over the native preview layer (ADR 0007).
 tauri = { version = "2.12", features = ["macos-private-api"] }
 tauri-plugin-dialog = "2"
+# "Show in Finder" after an export. MIT OR Apache-2.0.
+tauri-plugin-opener = "2"
 # Bundled music manifest (`assets/music/manifest.toml`). MIT OR Apache-2.0.
 toml = { version = "1", default-features = false, features = ["std", "parse", "serde"] }
 tracing = "0.1"

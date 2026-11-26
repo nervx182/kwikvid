@@ -10,6 +10,7 @@
 //! replaced.
 
 use std::io::{IsTerminal, Write};
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -60,7 +61,10 @@ pub fn run(args: &EditArgs) -> anyhow::Result<()> {
         &backend,
         &tmp,
         &settings,
-        &mut |p| reporter.update(p),
+        &mut |p| {
+            reporter.update(p);
+            ControlFlow::Continue(())
+        },
     );
     reporter.finish();
     let report = match result {

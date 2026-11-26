@@ -1,0 +1,11 @@
+{
+  "id": 1,
+  "state": "done",
+  "report": {
+    "path": "/home/ana/Movies/Untitled.mp4",
+    "frames": 240,
+    "duration": 8000000,
+    "encoder_name": "h264_videotoolbox",
+    "elapsed_ms": 12345
+  }
+}
