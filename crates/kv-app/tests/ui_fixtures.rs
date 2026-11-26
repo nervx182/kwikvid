@@ -618,7 +618,70 @@ fn all_fixtures() -> Vec<(&'static str, String)> {
     all.extend(inspector_fixtures());
     all.extend(styles_fixtures());
     all.extend(export_fixtures());
+    all.extend(camera_fixtures());
     all
+}
+
+/// The camera import dialog's fixtures: `list_cameras` and
+/// `list_camera_recordings` answers and a finished import's `kv://camera`
+/// update. The recordings and the update are the app's `RecordingInfo` and
+/// `CameraUpdate` (`src/camera.rs`, which this integration test cannot
+/// import; a unit test there checks these keys): a `CameraRecording` plus
+/// `chapters` and `already_copied` with `modified` in Unix milliseconds,
+/// and `{ id, ...CopyEvent, report }`.
+fn camera_fixtures() -> Vec<(&'static str, String)> {
+    use kv_session::{CameraVolume, CopyEvent};
+    let volume = CameraVolume {
+        path: PathBuf::from("/Volumes/GOPRO"),
+        name: "GOPRO".into(),
+        is_gopro: true,
+    };
+    let dir = "/Volumes/GOPRO/DCIM/100GOPRO";
+    // 2024-07-14 09:30 UTC and the next day.
+    let recording = |names: &[&str], total_bytes: u64, modified: u64, copied: bool| {
+        serde_json::json!({
+            "files": names.iter().map(|n| format!("{dir}/{n}")).collect::<Vec<_>>(),
+            "total_bytes": total_bytes,
+            "modified": modified,
+            "chapters": names.len(),
+            "has_gaps": false,
+            "already_copied": copied,
+        })
+    };
+    let recordings = vec![
+        recording(
+            &["GX010042.MP4", "GX020042.MP4"],
+            7_516_192_768,
+            1_720_949_400_000,
+            false,
+        ),
+        recording(&["GX010043.MP4"], 1_073_741_824, 1_720_949_400_000, true),
+        recording(&["GX010044.MP4"], 536_870_912, 1_721_035_800_000, false),
+    ];
+    let copied = vec![
+        PathBuf::from("/home/ana/Movies/kwikvid/2024-07-14/GX010042.MP4"),
+        PathBuf::from("/home/ana/Movies/kwikvid/2024-07-14/GX020042.MP4"),
+    ];
+    let mut done = serde_json::to_value(CopyEvent::Done {
+        copied,
+        skipped: vec![],
+    })
+    .expect("done");
+    let obj = done.as_object_mut().expect("object");
+    obj.insert("id".into(), 1.into());
+    obj.insert(
+        "report".into(),
+        serde_json::to_value(ImportReport {
+            added: vec![MediaId(1)],
+            skipped: vec![],
+        })
+        .expect("report"),
+    );
+    vec![
+        ("camera-volumes", render(&vec![volume])),
+        ("camera-recordings", render(&recordings)),
+        ("camera-done", render(&done)),
+    ]
 }
 
 /// The export dialog's fixtures: the timeline edit switched to 9:16 (what

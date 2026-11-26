@@ -16,6 +16,7 @@ import { initTransport, renderTransport } from "./transport.js";
 import { initStyles, renderStyles } from "./styles.js";
 import { initMusic, renderMusic } from "./music.js";
 import { initExport, renderExport } from "./export.js";
+import { initCamera } from "./camera.js";
 
 let current = null;
 
@@ -77,6 +78,7 @@ initTweaks(run);
 initTransport(run);
 initAutoEdit(run, render);
 initLibrary(run);
+initCamera();
 initInspector(render);
 initStyles(run);
 initMusic(run);

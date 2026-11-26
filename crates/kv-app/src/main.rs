@@ -8,7 +8,8 @@
 //! [`transport`]; the music picker's `bundled_tracks`, `pick_music` and
 //! `analyze_music`, see [`music`]; the export dialog's `export_options`,
 //! `choose_export_path`, `start_export`, `cancel_export` and
-//! `reveal_export`, see [`export`]). Each forwards to the
+//! `reveal_export`, see [`export`]; camera / SD card import, see
+//! [`camera`]). Each forwards to the
 //! session (see [`ipc`]); after every change the backend emits a `kv://state`
 //! event with the new snapshot. Errors come back as `{ "message": "..." }`.
 //! Project files (New, Open, Save, Save As, recent) are in [`project`]; the
@@ -33,6 +34,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod blit;
+mod camera;
 mod export;
 mod ipc;
 mod library;
@@ -341,6 +343,12 @@ fn main() -> anyhow::Result<()> {
             timeline::nudge_cut,
             library::import,
             library::pick_media,
+            camera::list_cameras,
+            camera::list_camera_recordings,
+            camera::camera_library_dir,
+            camera::choose_camera_library_dir,
+            camera::start_camera_import,
+            camera::cancel_camera_import,
             transport::play,
             transport::pause,
             transport::seek,
@@ -366,6 +374,10 @@ fn main() -> anyhow::Result<()> {
             app.manage(music::MusicPicks::default());
             app.manage(library::Library::start(app.handle()));
             app.manage(export::Exports::start());
+            app.manage(camera::CameraImports::load(
+                app.path().app_config_dir().ok(),
+                camera::default_library_dir(&media_root(app.handle())),
+            ));
             let files = ProjectFiles::load(app.path().app_config_dir().ok());
             app.set_menu(menu::build(app.handle(), &files.recent())?)?;
             app.manage(files);
