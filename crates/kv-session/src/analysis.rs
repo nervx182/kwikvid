@@ -42,12 +42,11 @@ impl MusicAnalyzer for AudioAnalyzer {
 pub(crate) struct MusicAnalyses(HashMap<String, Arc<MusicAnalysis>>);
 
 impl MusicAnalyses {
-    /// Re-key from project paths relative to `from` to ones relative to `to`
-    /// (see [`crate::rebase`]); entries that can't be rebased are dropped.
-    pub(crate) fn rebase(&mut self, from: &Path, to: &Path) {
+    /// Re-key every entry with `f`; entries it maps to `None` are dropped.
+    pub(crate) fn remap(&mut self, f: impl Fn(&str) -> Option<String>) {
         self.0 = std::mem::take(&mut self.0)
             .into_iter()
-            .filter_map(|(k, v)| crate::rebase(&k, from, to).ok().map(|k| (k, v)))
+            .filter_map(|(k, v)| f(&k).map(|k| (k, v)))
             .collect();
     }
 }
@@ -100,7 +99,7 @@ impl Session {
         else {
             return false;
         };
-        match self.to_project_path(path) {
+        match self.music_project_path(path) {
             Ok(project_path) => {
                 self.set_music_analysis(project_path, analysis.clone());
                 true
@@ -129,7 +128,7 @@ mod tests {
     }
 
     #[test]
-    fn rebase_rekeys_and_drops_what_cannot_be_rebased() {
+    fn remap_rekeys_and_drops_what_cannot_be_rebased() {
         let (home, trip) = if cfg!(windows) {
             (r"C:\home\ana", r"C:\home\ana\trip")
         } else {
@@ -137,12 +136,12 @@ mod tests {
         };
         let a = analysis();
         let mut m = MusicAnalyses(HashMap::from([("music/s.mp3".to_string(), a.clone())]));
-        m.rebase(Path::new(home), Path::new(trip));
+        m.remap(|k| crate::rebase(k, Path::new(home), Path::new(trip)).ok());
         assert_eq!(m.0.keys().collect::<Vec<_>>(), ["../music/s.mp3"]);
         assert!(Arc::ptr_eq(&m.0["../music/s.mp3"], &a));
 
         // A relative root can't be resolved, so the entry is dropped.
-        m.rebase(Path::new("relative"), Path::new(trip));
+        m.remap(|k| crate::rebase(k, Path::new("relative"), Path::new(trip)).ok());
         assert!(m.0.is_empty());
     }
 }

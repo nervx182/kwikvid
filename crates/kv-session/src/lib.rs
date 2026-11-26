@@ -23,6 +23,8 @@
 //! the root. An untitled project's media root is the user's home directory;
 //! [`Session::save_as`] rebases the paths onto the project file's folder,
 //! and [`Session::open`] uses the file's folder as the media root.
+//! Saving copies bundled music into the project folder (see [`MUSIC_DIR`]
+//! and [`Session::set_bundled_music_dir`]).
 //!
 //! # Snapshot JSON
 //!
@@ -35,6 +37,7 @@
 //! ```
 
 mod analysis;
+mod bundled;
 mod error;
 pub mod export;
 mod filmstrips;
@@ -46,6 +49,7 @@ pub mod regen;
 mod tweaks;
 
 pub use analysis::{AudioAnalyzer, MusicAnalyzer};
+pub use bundled::MUSIC_DIR;
 pub use error::SessionError;
 pub use export::{
     export_size, ExportEvent, ExportInput, ExportJob, ExportOptions, ExportRequest,
@@ -97,6 +101,9 @@ pub struct Session {
     thumbnails: import::Thumbnails,
     /// The project file, once opened or saved.
     file: Option<PathBuf>,
+    /// The bundled music folder and picks waiting to be copied (see
+    /// [`Session::set_bundled_music_dir`]).
+    bundled: bundled::Bundled,
 }
 
 impl Session {
@@ -112,6 +119,7 @@ impl Session {
             music: Default::default(),
             thumbnails: Default::default(),
             file: None,
+            bundled: Default::default(),
         }
     }
 
@@ -204,8 +212,13 @@ impl Session {
     }
 
     /// The absolute host path a project path refers to (the inverse of
-    /// [`Session::to_project_path`]).
+    /// [`Session::to_project_path`]). A bundled track picked from another
+    /// drive resolves to the bundled file until the next save copies it
+    /// (see [`Session::music_project_path`]).
     pub fn resolve(&self, project_path: &str) -> PathBuf {
+        if let Some(bundled) = self.pending_music(project_path) {
+            return bundled.to_owned();
+        }
         paths::resolve_native(&self.media_root, project_path)
     }
 }
