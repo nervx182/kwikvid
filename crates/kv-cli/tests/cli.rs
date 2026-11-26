@@ -508,7 +508,11 @@ fn render_refuses_to_replace_without_overwrite() {
     .success()
     .get_output()
     .clone();
-    assert!(out.stderr.is_empty(), "--quiet prints nothing");
+    assert!(
+        out.stderr.is_empty(),
+        "--quiet prints nothing, got: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let info = FfmpegBackend::new()
         .unwrap()
         .probe(&dir.path().join("out.mp4"))
