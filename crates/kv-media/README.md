@@ -51,11 +51,36 @@ two stay open. `open_item_video(backend, path, chapters, opts)` returns the
 plain reader when `chapters` is empty and a `ChapteredReader` otherwise.
 Clip audio across chapters is not handled yet.
 
-`FfmpegBackend` decodes on the CPU with FFmpeg's frame threading; hardware
-decode (VideoToolbox) is a later item. Errors: `Open` (unreadable or
-truncated container), `NoVideoStream`, `Decode` (corrupt data, unsupported
-codec). `FfmpegBackend::open_video_reader` returns the concrete reader, which
-also reports `seek_count()`.
+Errors: `Open` (unreadable or truncated container), `NoVideoStream`,
+`Decode` (corrupt data, unsupported codec). `FfmpegBackend::open_video_reader`
+returns the concrete reader, which also reports `seek_count()` and
+`hardware()`.
+
+### Hardware decode
+
+On macOS, `FfmpegBackend` decodes H.264 and HEVC (8- and 10-bit) with
+VideoToolbox through FFmpeg's `videotoolbox` hwaccel when it can; everything
+else, and every other platform, decodes on the CPU with FFmpeg's frame
+threading. Hardware frames are copied to system memory (NV12, or P010 for
+10-bit) and go through the same swscale conversion as CPU frames, so sizes,
+rotation, colour matrix and range are handled identically and the frames
+are the same RGBA8 `VideoFrame`s.
+
+If the hardware path fails at any point (no VideoToolbox device, a codec or
+profile it cannot decode, an error mid-stream) the reader logs it once at
+`debug` and continues on the CPU with no error to the caller: a failure on
+the first frame reopens the file on the CPU (the first frame is decoded
+when the reader is opened, so `hardware()` is settled from then on), a
+later one resumes right after the last frame produced.
+
+- `FfmpegVideoReader::hardware()` says which path is in use; the seek
+  benchmark prints it per case.
+- `KV_HWDECODE=0` (also `false`, `off`, `no`) forces CPU decode, for
+  before/after comparisons and as an escape hatch.
+  `FfmpegBackend::open_video_reader_with(path, opts, HwDecode::Cpu)` does the
+  same for one reader regardless of the variable.
+- A shipped FFmpeg build must be configured with `--enable-videotoolbox`
+  (Homebrew's is).
 
 ## Filmstrip thumbnails
 

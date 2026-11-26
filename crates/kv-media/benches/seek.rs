@@ -13,7 +13,9 @@
 //! one open reader, like a user clicking around the timeline. Besides
 //! criterion's mean, each case prints one line with the p50 / p95 / max of
 //! all its individual calls (warm-up included), in criterion's `time:` style
-//! so the regression job summary picks it up.
+//! so the regression job summary picks it up, and which decode path the
+//! reader uses (`hardware` = VideoToolbox, `cpu`; `KV_HWDECODE=0` forces the
+//! CPU for before/after comparisons).
 //!
 //! Fixtures are encoded with FFmpeg on first run into `CARGO_TARGET_TMPDIR`
 //! and reused by later runs. Runs only in the regression `benchmarks` job:
@@ -25,7 +27,7 @@ use std::time::{Duration, Instant};
 use criterion::{criterion_group, criterion_main, Criterion, SamplingMode};
 use ffmpeg_next as ff;
 use kv_core::Micros;
-use kv_media::{DecodeOptions, FfmpegBackend, MediaBackend};
+use kv_media::{DecodeOptions, FfmpegBackend, MediaBackend, VideoReader};
 
 /// The M2 seek target this benchmark checks.
 const TARGET: Duration = Duration::from_millis(150);
@@ -356,13 +358,15 @@ fn bench_file(c: &mut Criterion, backend: &FfmpegBackend, label: &str, path: &Pa
             size,
             ..DecodeOptions::default()
         };
-        let mut reader = match backend.open_video(path, &opts) {
+        let mut reader = match backend.open_video_reader(path, &opts) {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("SKIPPED: seek/{label}/{size_label}: {e}");
                 continue;
             }
         };
+        let decode = if reader.hardware() { "hardware" } else { "cpu" };
+        eprintln!("seek/{label}/{size_label}: {decode} decode");
         let mut times = SeekTimes(0x5EEC_0000 ^ label.len() as u64);
         let mut samples: Vec<Duration> = Vec::new();
         let id = format!("{label}/{size_label}");
@@ -392,7 +396,10 @@ fn bench_file(c: &mut Criterion, backend: &FfmpegBackend, label: &str, path: &Pa
         );
         // Same shape as criterion's own lines so the job summary's
         // `grep -B1 'time:'` shows it.
-        println!("seek/{id} p50/p95/max over {} calls", samples.len());
+        println!(
+            "seek/{id} p50/p95/max over {} calls, {decode} decode",
+            samples.len()
+        );
         println!(
             "                        time:   [{} {} {}]  target {}: p95 {}",
             ms(p50),
