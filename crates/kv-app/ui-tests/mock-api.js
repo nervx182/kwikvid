@@ -20,6 +20,7 @@
 //   stats      what get_preview_stats answers (set via __kvMockInit.stats).
 //   values     standing answers for commands that do not return a
 //              Snapshot: { [command]: value } (set by mock.open(s, { values })).
+//              values.get_preview_backend picks the preview backend.
 //   fire(name, payload)  deliver a backend event to onEvent listeners
 //              (set by mock.event()).
 //
@@ -152,6 +153,16 @@ export function getPreviewStats() {
 // the real command.
 export function setViewerRect(rect) {
   return query("set_viewer_rect", rect, null);
+}
+
+// "off" unless a test sets values.get_preview_backend (e.g. "webgl").
+export function getPreviewBackend() {
+  return query("get_preview_backend", undefined, () => mock.values.get_preview_backend ?? "off");
+}
+
+// Preview frames: tests answer these with page.route("http://kvframe.localhost/**").
+export function frameUrl(after) {
+  return `http://kvframe.localhost/latest?after=${after}`;
 }
 
 export function onState(cb) {

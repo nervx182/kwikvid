@@ -7,8 +7,8 @@
 //! [`PreviewBackend::preferred`] then draws the preview there, letterboxed
 //! to the frame's (the project's) aspect ratio.
 
-// The geometry and test pattern serve the macOS native layer; elsewhere
-// only the tests use them until the WebGL fallback (#76) lands.
+// The AppKit geometry and surface format serve the macOS native layer;
+// elsewhere only the tests use them.
 #![cfg_attr(not(target_os = "macos"), allow(dead_code))]
 
 use std::sync::{Mutex, PoisonError};
@@ -16,37 +16,62 @@ use std::sync::{Mutex, PoisonError};
 use kv_core::{AspectRatio, Micros};
 use kv_media::VideoFrame;
 
+/// Environment variable overriding the preview backend: `webgl` (the
+/// fallback, e.g. to try it on macOS) or `off`.
+pub const PREVIEW_ENV: &str = "KV_PREVIEW";
+
 /// How preview frames reach the screen. The one place the backend is
-/// chosen; the WebGL fallback (#76) adds its variant here.
+/// chosen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreviewBackend {
     /// wgpu renders into a `CAMetalLayer` on an `NSView` under the
     /// transparent webview (`native_view`).
     #[cfg(target_os = "macos")]
     NativeMetal,
-    /// No preview surface: the viewer stays empty. Used where no backend
-    /// exists yet and when the preferred one fails to start.
+    /// Raw RGBA frames (at most 960x540) over `kvframe://` into a WebGL2
+    /// canvas in the viewer (`webgl`, `ui/js/viewer-webgl.js`). The
+    /// backend on Linux and Windows.
+    WebGl,
+    /// No preview surface: the viewer stays empty. Used on request
+    /// (`KV_PREVIEW=off`) and when the native layer fails to start.
     Off,
 }
 
 impl PreviewBackend {
-    /// The backend this build uses unless it fails to start.
+    /// The backend this build uses unless it fails to start: the
+    /// platform's, or the one [`PREVIEW_ENV`] names.
     pub fn preferred() -> PreviewBackend {
+        PreviewBackend::choose(std::env::var(PREVIEW_ENV).ok().as_deref())
+    }
+
+    /// The backend for a [`PREVIEW_ENV`] value: `webgl` or `off`, else
+    /// (unset or unknown) the platform default, native Metal on macOS and
+    /// WebGL elsewhere.
+    pub fn choose(env: Option<&str>) -> PreviewBackend {
+        match env.map(str::trim) {
+            Some("webgl") => return PreviewBackend::WebGl,
+            Some("off") => return PreviewBackend::Off,
+            Some(other) if !other.is_empty() => {
+                tracing::warn!("{PREVIEW_ENV}={other:?} is not webgl or off; using the default");
+            }
+            _ => {}
+        }
         #[cfg(target_os = "macos")]
         {
             PreviewBackend::NativeMetal
         }
         #[cfg(not(target_os = "macos"))]
         {
-            PreviewBackend::Off
+            PreviewBackend::WebGl
         }
     }
 
-    /// Short name for logs.
+    /// Short name for logs and the UI (`get_preview_backend`).
     pub fn name(self) -> &'static str {
         match self {
             #[cfg(target_os = "macos")]
             PreviewBackend::NativeMetal => "native-metal",
+            PreviewBackend::WebGl => "webgl",
             PreviewBackend::Off => "off",
         }
     }
@@ -395,12 +420,26 @@ mod tests {
 
     #[test]
     fn backend_choice_follows_platform() {
-        let b = PreviewBackend::preferred();
+        let b = PreviewBackend::choose(None);
         #[cfg(target_os = "macos")]
         assert_eq!(b, PreviewBackend::NativeMetal);
         #[cfg(not(target_os = "macos"))]
-        assert_eq!(b, PreviewBackend::Off);
+        assert_eq!(b, PreviewBackend::WebGl);
         assert!(!b.name().is_empty());
+        assert_eq!(PreviewBackend::choose(Some("")), b);
+        assert_eq!(PreviewBackend::choose(Some("metal-please")), b);
+    }
+
+    #[test]
+    fn env_selects_webgl_or_off() {
+        assert_eq!(PreviewBackend::choose(Some("webgl")), PreviewBackend::WebGl);
+        assert_eq!(
+            PreviewBackend::choose(Some(" webgl\n")),
+            PreviewBackend::WebGl
+        );
+        assert_eq!(PreviewBackend::choose(Some("off")), PreviewBackend::Off);
+        assert_eq!(PreviewBackend::WebGl.name(), "webgl");
+        assert_eq!(PreviewBackend::Off.name(), "off");
     }
 
     #[test]
