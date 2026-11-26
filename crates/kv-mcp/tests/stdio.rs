@@ -2,6 +2,7 @@
 //! lists tools and resources, and calls every tool.
 
 use std::io::{BufRead, BufReader, Write};
+use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use serde_json::{json, Value};
@@ -14,11 +15,14 @@ struct Client {
 }
 
 impl Client {
-    fn spawn() -> Self {
+    /// Spawn the server with the analysis cache in `cache`.
+    fn spawn(cache: &Path) -> Self {
         let root = std::env::temp_dir();
         let mut child = Command::new(env!("CARGO_BIN_EXE_kwikvid-mcp"))
             .arg("--root")
             .arg(&root)
+            .arg("--cache")
+            .arg(cache)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -85,23 +89,46 @@ impl Drop for Client {
     }
 }
 
+impl Client {
+    fn initialize(&mut self) -> Value {
+        let init = self.request(
+            "initialize",
+            json!({
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "kv-mcp-test", "version": "0"}
+            }),
+        );
+        self.send(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
+        init
+    }
+}
+
+#[test]
+fn server_starts_when_the_cache_dir_cannot_be_created() {
+    // A directory below a regular file cannot be created: the cache falls
+    // back to memory and the server still serves.
+    let file = std::env::temp_dir().join(format!("kv-mcp-not-a-dir-{}", std::process::id()));
+    std::fs::write(&file, b"").unwrap();
+    let mut c = Client::spawn(&file.join("cache"));
+    c.initialize();
+    let state = c.call_ok("project_state", json!({}));
+    assert_eq!(state["revision"], 0);
+    drop(c);
+    let _ = std::fs::remove_file(&file);
+}
+
 #[test]
 fn handshake_list_and_call_every_tool() {
-    let mut c = Client::spawn();
+    let cache = std::env::temp_dir().join(format!("kv-mcp-cache-{}", std::process::id()));
+    let mut c = Client::spawn(&cache);
 
     // Handshake.
-    let init = c.request(
-        "initialize",
-        json!({
-            "protocolVersion": "2025-06-18",
-            "capabilities": {},
-            "clientInfo": {"name": "kv-mcp-test", "version": "0"}
-        }),
-    );
+    let init = c.initialize();
     assert_eq!(init["serverInfo"]["name"], "kwikvid-mcp");
     assert!(init["capabilities"]["tools"].is_object());
     assert!(init["capabilities"]["resources"].is_object());
-    c.send(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
+    let instructions = init["instructions"].as_str().unwrap();
 
     // Tools, with schemas generated from the Rust parameter types.
     let tools = c.request("tools/list", json!({}));
@@ -113,67 +140,110 @@ fn handshake_list_and_call_every_tool() {
         [
             "edit_exclude_range",
             "edit_pin_range",
+            "edit_redo",
             "edit_undo",
+            "edit_unexclude_range",
+            "edit_unpin_range",
             "media_add",
+            "media_remove",
             "project_state"
         ]
     );
+    for name in &names {
+        assert!(instructions.contains(name), "{name} not in instructions");
+    }
     let schema =
         |name: &str| tools.iter().find(|t| t["name"] == name).unwrap()["inputSchema"].clone();
     let media_add = schema("media_add");
     assert_eq!(media_add["required"], json!(["path"]));
     assert!(media_add["properties"]["duration_us"].is_object());
-    let pin = schema("edit_pin_range");
-    for field in ["media_id", "start_us", "end_us"] {
-        assert!(
-            pin["required"].as_array().unwrap().contains(&json!(field)),
-            "{field} should be required: {pin}"
-        );
+    assert_eq!(schema("media_remove")["required"], json!(["media_id"]));
+    for tool in [
+        "edit_pin_range",
+        "edit_unpin_range",
+        "edit_exclude_range",
+        "edit_unexclude_range",
+    ] {
+        let s = schema(tool);
+        for field in ["media_id", "start_us", "end_us"] {
+            assert!(
+                s["required"].as_array().unwrap().contains(&json!(field)),
+                "{tool}: {field} should be required: {s}"
+            );
+        }
     }
 
-    // project_state on an empty project.
+    // project_state on an empty project: the session snapshot.
     let state = c.call_ok("project_state", json!({}));
-    assert_eq!(state["version"], 1);
-    assert_eq!(state["media"], json!([]));
+    assert_eq!(state["revision"], 0);
+    assert_eq!(state["can_undo"], false);
+    assert_eq!(state["can_redo"], false);
+    assert_eq!(state["dirty"], false);
+    assert!(state["media_root"].is_string());
+    assert_eq!(state["project"]["version"], 1);
+    assert_eq!(state["project"]["media"], json!([]));
 
     // media_add with a duration override (no file access).
-    let ev = c.call_ok(
+    let r = c.call_ok(
         "media_add",
         json!({"path": "clips/GX010001.MP4", "duration_us": 10_000_000}),
     );
-    assert_eq!(ev, json!({"type": "media_added", "media_id": 1}));
-    let ev = c.call_ok(
+    assert_eq!(
+        r,
+        json!({
+            "revision": 1,
+            "can_undo": true,
+            "can_redo": false,
+            "dirty": true,
+            "manual_edits_replaced": false,
+            "regen_error": r["regen_error"],
+            "edit": {"segments": 0, "length_us": 0},
+            "media_id": 1
+        })
+    );
+    // No music: the edit cannot be built, but the media is added.
+    assert!(r["regen_error"].is_string(), "{r}");
+    let r = c.call_ok(
         "media_add",
         json!({"path": "b.mp4", "duration_us": 5_000_000}),
     );
-    assert_eq!(ev["media_id"], 2);
+    assert_eq!(r["media_id"], 2);
+    let r = c.call_ok(
+        "media_add",
+        json!({"path": "c.mp4", "duration_us": 5_000_000}),
+    );
+    assert_eq!(r["media_id"], 3);
 
     // Pin and exclude.
-    let ev = c.call_ok(
+    let r = c.call_ok(
         "edit_pin_range",
         json!({"media_id": 1, "start_us": 1_000_000, "end_us": 3_000_000}),
     );
-    assert_eq!(ev["type"], "range_pinned");
-    assert_eq!(ev["section"], 1);
-    let ev = c.call_ok(
+    assert_eq!(r["revision"], 4);
+    assert!(r.get("media_id").is_none(), "{r}");
+    c.call_ok(
         "edit_exclude_range",
         json!({"media_id": 2, "start_us": 0, "end_us": 5_000_000}),
     );
-    assert_eq!(ev["type"], "range_excluded");
 
-    // A rejected command is a tool error carrying the kv-core message, and
+    // A rejected command is a tool error carrying a readable message, and
     // leaves the project unchanged.
+    let before = c.call_ok("project_state", json!({}));
     let (is_error, text) = c.call(
         "edit_exclude_range",
         json!({"media_id": 1, "start_us": 2_000_000, "end_us": 4_000_000}),
     );
     assert!(is_error);
     assert!(text.contains("overlaps"), "{text}");
+    let (is_error, _) = c.call("media_add", json!({"path": "../x.mp4", "duration_us": 1}));
+    assert!(is_error);
 
     let state = c.call_ok("project_state", json!({}));
-    assert_eq!(state["media"][0]["path"], "clips/GX010001.MP4");
-    assert_eq!(state["media"][0]["duration"], 10_000_000);
-    let section = &state["sections"][0];
+    assert_eq!(state, before);
+    let project = &state["project"];
+    assert_eq!(project["media"][0]["path"], "clips/GX010001.MP4");
+    assert_eq!(project["media"][0]["duration"], 10_000_000);
+    let section = &project["sections"][0];
     assert_eq!(
         section["pins"],
         json!([{"media_id": 1, "start": 1_000_000, "end": 3_000_000}])
@@ -190,20 +260,44 @@ fn handshake_list_and_call_every_tool() {
     let text = read["contents"][0]["text"].as_str().unwrap();
     assert_eq!(serde_json::from_str::<Value>(text).unwrap(), state);
 
-    // Undo the exclude, then the pin.
-    let ev = c.call_ok("edit_undo", json!({}));
-    assert_eq!(ev["undone"]["type"], "exclude_range");
-    let ev = c.call_ok("edit_undo", json!({}));
-    assert_eq!(ev["undone"]["type"], "pin_range");
+    // Unexclude and unpin, then remove a clip.
+    c.call_ok(
+        "edit_unexclude_range",
+        json!({"media_id": 2, "start_us": 0, "end_us": 5_000_000}),
+    );
+    c.call_ok(
+        "edit_unpin_range",
+        json!({"media_id": 1, "start_us": 1_000_000, "end_us": 3_000_000}),
+    );
+    c.call_ok("media_remove", json!({"media_id": 3}));
     let state = c.call_ok("project_state", json!({}));
-    assert_eq!(state["sections"][0]["pins"], json!([]));
-    assert_eq!(state["sections"][0]["excludes"], json!([]));
-    assert_eq!(state["media"].as_array().unwrap().len(), 2);
+    assert_eq!(state["project"]["sections"][0]["pins"], json!([]));
+    assert_eq!(state["project"]["sections"][0]["excludes"], json!([]));
+    assert_eq!(state["project"]["media"].as_array().unwrap().len(), 2);
 
-    // Undo both adds; then there is nothing left to undo.
-    c.call_ok("edit_undo", json!({}));
-    c.call_ok("edit_undo", json!({}));
+    // Undo the remove and redo it.
+    let r = c.call_ok("edit_undo", json!({}));
+    assert_eq!(r["can_redo"], true);
+    let state = c.call_ok("project_state", json!({}));
+    assert_eq!(state["project"]["media"].as_array().unwrap().len(), 3);
+    let r = c.call_ok("edit_redo", json!({}));
+    assert_eq!(r["can_redo"], false);
+    let (is_error, text) = c.call("edit_redo", json!({}));
+    assert!(is_error);
+    assert_eq!(text, "Nothing to redo.");
+
+    // Undo everything (3 adds, pin, exclude, unexclude, unpin, remove); then
+    // there is nothing left to undo.
+    for _ in 0..8 {
+        c.call_ok("edit_undo", json!({}));
+    }
+    let state = c.call_ok("project_state", json!({}));
+    assert_eq!(state["project"]["media"], json!([]));
+    assert_eq!(state["dirty"], false);
     let (is_error, text) = c.call("edit_undo", json!({}));
     assert!(is_error);
-    assert_eq!(text, "nothing to undo");
+    assert_eq!(text, "Nothing to undo.");
+    drop(c);
+    assert!(cache.join("cache.sqlite").exists());
+    let _ = std::fs::remove_dir_all(&cache);
 }

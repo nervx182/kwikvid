@@ -43,7 +43,7 @@ CLI, MCP server) that all drive the engine through the same serialisable
 | kv-render | Frame plan (pure) + compositing: transitions, speed, titles, preview frames | wgpu |
 | kv-cache | Blob cache (thumbnails, probe, HiLights, music analysis) in one SQLite file, keyed by source path+size+mtime, kind and params; LRU prune | rusqlite (bundled) |
 | kv-cli | `kwikvid edit --clips ... --music ... --out ...` | clap |
-| kv-mcp | MCP server | rmcp |
+| kv-mcp | MCP server over a `kv_session::Session` (same auto-regenerate and undo as the app); tools split by area in `src/tools/` | rmcp, kv-session |
 | kv-app | Desktop shell and UI | Tauri 2 |
 | kv-session | Desktop session: project + history, jobs, regenerate, save/open, export job; Tauri-free, so the gate unit-tests the app logic without a webview | kv-core, kv-autoedit, kv-render (export, no GPU), serde, tracing |
 | kv-cloud | Camera (Open GoPro) and cloud import, Roadmap I | reqwest |
