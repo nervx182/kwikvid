@@ -43,9 +43,24 @@ pub(crate) fn ensure_fixture_in(
 /// place, so a reader in another test process never observes a half-written
 /// fixture.
 pub(crate) fn ensure_file_in(dir: &Path, name: &str, write: impl FnOnce(&Path)) -> PathBuf {
+    let result: Result<PathBuf, std::convert::Infallible> = try_ensure_file_in(dir, name, |tmp| {
+        write(tmp);
+        Ok(())
+    });
+    result.unwrap_or_else(|never| match never {})
+}
+
+/// Like [`ensure_file_in`] for a `write` that can fail: on `Err` the
+/// temporary file is removed and the error returned, so a later call tries
+/// again.
+pub(crate) fn try_ensure_file_in<E>(
+    dir: &Path,
+    name: &str,
+    write: impl FnOnce(&Path) -> Result<(), E>,
+) -> Result<PathBuf, E> {
     let path = dir.join(name);
     if path.is_file() {
-        return path;
+        return Ok(path);
     }
     fs::create_dir_all(dir)
         .unwrap_or_else(|e| panic!("cannot create fixture dir {}: {e}", dir.display()));
@@ -56,7 +71,10 @@ pub(crate) fn ensure_file_in(dir: &Path, name: &str, write: impl FnOnce(&Path)) 
         std::process::id(),
         COUNTER.fetch_add(1, Ordering::Relaxed)
     ));
-    write(&tmp);
+    if let Err(e) = write(&tmp) {
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
+    }
     if let Err(e) = fs::rename(&tmp, &path) {
         // On Windows rename fails if another process won the race; the
         // content is equivalent, so keep theirs.
@@ -65,7 +83,7 @@ pub(crate) fn ensure_file_in(dir: &Path, name: &str, write: impl FnOnce(&Path)) 
             panic!("cannot move fixture into {}: {e}", path.display());
         }
     }
-    path
+    Ok(path)
 }
 
 /// Format a positive float for use in a file name: `120` -> `120`,
@@ -120,6 +138,25 @@ mod tests {
         // No temporary files left behind.
         let entries: Vec<_> = fs::read_dir(&dir).unwrap().collect();
         assert_eq!(entries.len(), 1);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn failed_write_leaves_nothing_and_is_retried() {
+        let dir = unique_temp_dir("fail");
+        let err = try_ensure_file_in(&dir, "x.bin", |tmp| {
+            fs::write(tmp, b"partial").unwrap();
+            Err("no encoder")
+        });
+        assert_eq!(err, Err("no encoder"));
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
+
+        let path = try_ensure_file_in::<()>(&dir, "x.bin", |tmp| {
+            fs::write(tmp, b"ok").unwrap();
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"ok");
         fs::remove_dir_all(&dir).unwrap();
     }
 

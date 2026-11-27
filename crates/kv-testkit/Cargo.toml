@@ -7,7 +7,8 @@ rust-version.workspace = true
 publish.workspace = true
 
 [features]
-# Tagged MP4 clip fixtures (`tagged_clip`, `tagged_clip_set`, `read_clip_tags`).
+# Tagged MP4 clip fixtures (`tagged_clip`, `tagged_clip_set`, `read_clip_tags`)
+# and synthetic benchmark clips (`synthetic_clip`).
 # Links the system FFmpeg, like kv-media (see README.md).
 video = ["dep:ffmpeg-next"]
 
