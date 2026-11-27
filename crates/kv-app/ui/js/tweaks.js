@@ -20,6 +20,14 @@
 import * as api from "./api.js";
 import { onTimelineDraw } from "./timeline.js";
 
+// The keys the handler below acts on, for the shortcuts overview (shortcuts.js).
+// Notation: Tauri accelerators (CmdOrCtrl = Cmd on macOS, Ctrl elsewhere).
+export const KEYS = [
+  { group: "Timeline", keys: [","], description: "Move the selected cut one beat earlier" },
+  { group: "Timeline", keys: ["."], description: "Move the selected cut one beat later" },
+  { group: "Timeline", keys: ["Escape"], description: "Cancel a drag, close the clip menu or deselect the cut" },
+];
+
 /** Pointer travel (px) before a press on a segment becomes a drag. */
 export const DRAG_THRESHOLD = 4;
 

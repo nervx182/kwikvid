@@ -2,6 +2,13 @@
 
 import * as api from "./api.js";
 
+// The keys the handler below acts on, for the shortcuts overview (shortcuts.js).
+// Notation: Tauri accelerators (CmdOrCtrl = Cmd on macOS, Ctrl elsewhere).
+export const KEYS = [
+  { group: "Edit", keys: ["CmdOrCtrl+Z"], description: "Undo" },
+  { group: "Edit", keys: ["CmdOrCtrl+Shift+Z"], description: "Redo" },
+];
+
 const undoBtn = () => document.getElementById("undo");
 const redoBtn = () => document.getElementById("redo");
 
