@@ -19,6 +19,11 @@
 //! the page has loaded), or with code 3 if none arrives in time. CI and
 //! headless checks use it to prove the app starts and exits cleanly.
 //!
+//! Startup logs one `startup: <phase> done at <ms> ms` line per setup phase
+//! at `info` level, measured from the start of `main` ([`startup_phase`]),
+//! ending with the first `kv://state`; the regression `benchmarks` job
+//! prints them under its cold-start numbers (issue #148).
+//!
 //! Preview (ADR 0007): the UI reports the viewer rectangle with
 //! `set_viewer_rect` and the backend chosen in [`preview::PreviewBackend`]
 //! draws there; on macOS that is the native Metal layer (`native_view`),
@@ -49,8 +54,8 @@ mod transport;
 mod webgl;
 
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Once, OnceLock};
+use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
 use ipc::{AppState, IpcError, STATE_EVENT};
@@ -72,10 +77,25 @@ use transport::{SeekLatencies, Transport};
 /// How long `--smoke` waits for the first `kv://state` event.
 const SMOKE_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// When `main` started: the origin of the [`startup_phase`] times.
+static STARTED: OnceLock<Instant> = OnceLock::new();
+
+/// Log that setup phase `name` finished, with the time since `main`
+/// started, as one `startup: <name> done at <ms> ms` line at `info` level.
+/// The regression cold-start step (`crates/kv-app/scripts/cold_start.py`)
+/// greps for `startup:`.
+fn startup_phase(name: &str) {
+    let ms = STARTED.get_or_init(Instant::now).elapsed().as_secs_f64() * 1e3;
+    tracing::info!("startup: {name} done at {ms:.1} ms");
+}
+
 /// Send the new state to every window after a successful change.
 /// `snapshot` is a [`Snapshot`] or a [`RegenSnapshot`] (the same keys plus
 /// `manual_edits_replaced` and `regen_error`).
 pub(crate) fn emit_state<R: Runtime, S: Serialize + Clone>(app: &AppHandle<R>, snapshot: &S) {
+    // Logged before the emit: `--smoke` exits on this event.
+    static FIRST_STATE: Once = Once::new();
+    FIRST_STATE.call_once(|| startup_phase(&format!("first {STATE_EVENT}")));
     if let Err(e) = app.emit(STATE_EVENT, snapshot) {
         tracing::warn!(error = %e, "could not emit {STATE_EVENT}");
     }
@@ -304,6 +324,7 @@ fn media_root<R: Runtime>(app: &AppHandle<R>) -> PathBuf {
 }
 
 fn main() -> anyhow::Result<()> {
+    STARTED.get_or_init(Instant::now);
     let latencies = Arc::new(SeekLatencies::default());
     tracing_subscriber::registry()
         .with(
@@ -370,16 +391,20 @@ fn main() -> anyhow::Result<()> {
                 AppState::new(Session::new(root))
                     .with_bundled_music(music::resource_dir(app.handle())),
             );
+            startup_phase("session/state");
             // Before the library's job event thread starts, which reads it.
             app.manage(music::MusicPicks::default());
             app.manage(library::Library::start(app.handle()));
+            startup_phase("library::Library::start");
             app.manage(export::Exports::start());
+            startup_phase("export::Exports::start");
             app.manage(camera::CameraImports::load(
                 app.path().app_config_dir().ok(),
                 camera::default_library_dir(&media_root(app.handle())),
             ));
             let files = ProjectFiles::load(app.path().app_config_dir().ok());
             app.set_menu(menu::build(app.handle(), &files.recent())?)?;
+            startup_phase("menu");
             app.manage(files);
             let backend = PreviewBackend::preferred();
             tracing::info!(backend = backend.name(), "preview backend");
@@ -390,6 +415,7 @@ fn main() -> anyhow::Result<()> {
             let webgl = webgl::WebGlPreview::new(latest_frame);
             let transport = Arc::new(Transport::new(latencies));
             let parts = EngineParts::start();
+            startup_phase("EngineParts::start");
             match backend {
                 PreviewBackend::Off => {
                     if let Some(f) = parts.headless() {

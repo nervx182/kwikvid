@@ -98,8 +98,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --release --locked -- --include-ignored
 
-  # Criterion benchmarks on Apple Silicon (the primary target). Results are
-  # uploaded as an artifact; there is no pass/fail threshold yet.
+  # Benchmarks on Apple Silicon (the primary target): criterion and timed
+  # benches, plus the app's cold start. Results are uploaded as an artifact;
+  # missed targets are reported, never failing the job.
   benchmarks:
     if: inputs.suite == 'all' || inputs.suite == 'performance'
     runs-on: macos-latest
@@ -125,6 +126,18 @@ jobs:
         run: |
           set -o pipefail
           cargo bench --workspace --locked --bench '*' 2>&1 | tee bench-output.txt
+      # Cold start (issue #148): the plain release binary (not the .app
+      # bundle, which needs the Tauri CLI and adds nothing to launch time
+      # here), launched 5 times with `--smoke` (exits on the first
+      # `kv://state`). Appends TARGET lines and the per-phase `startup:` log
+      # lines to bench-output.txt for the tables below.
+      - name: Cold start (kwikvid --smoke, plain release binary)
+        if: success() || failure()
+        timeout-minutes: 20
+        run: |
+          set -o pipefail
+          cargo build -p kv-app --release --locked
+          python3 crates/kv-app/scripts/cold_start.py target/release/kwikvid-app 5 2>&1 | tee -a bench-output.txt
       # `TARGET <name> <measured_ms> <target_ms>` lines (AGENTS.md, "Full
       # regression suite") as a table. Reported only: a missed target does
       # not fail the job (the virtual runner's numbers are noisy).
@@ -144,6 +157,7 @@ jobs:
         if: always()
         run: |
           { echo '## Benchmarks'; echo '```'; grep -E -B1 'time:' bench-output.txt | grep -v -- '^--$' || true; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          { echo '## Cold start phases and preview compositor'; echo '```'; grep -E '^(cold-start|startup phases|  startup:|preview/.*: compositor)' bench-output.txt || true; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       # The summary above already holds the numbers, so a full artifact store
       # (account-wide quota) must not fail the regression run.
       - uses: actions/upload-artifact@v4

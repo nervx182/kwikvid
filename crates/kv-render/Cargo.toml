@@ -50,5 +50,12 @@ ffmpeg-next = { version = "9.1", default-features = false, features = ["codec", 
 name = "export"
 harness = false
 
+# 1080p preview playback rate and seek latency vs the Roadmap I targets
+# (issue #148); a timed run, not criterion. Regression `benchmarks` job, and
+# runs on Linux with the CPU compositor.
+[[bench]]
+name = "preview"
+harness = false
+
 [lints]
 workspace = true
