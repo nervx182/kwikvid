@@ -278,18 +278,11 @@ fn mcp_drives_a_full_edit() {
     c.call_ok("title_set", json!({"text": TITLE}));
 
     // 6. Manual tweaks: none of them rebuilds the edit.
-    // Swap segments 1 and 2. A move repacks the timeline and every segment
-    // keeps its own transition, so the cuts stay on the beat only when the
-    // crossfades around the moved segments are equally long.
+    // Move segment 0 (its transition is a hard cut) into the crossfaded
+    // slot 2. Transitions stay with the slot, so the cuts stay on the beat.
     let segs = segments(&state(&mut c)["project"]);
     assert!(segs.len() >= 4, "only {} segments", segs.len());
-    assert!(
-        segs[1..4]
-            .iter()
-            .all(|s| (s.fade - segs[1].fade).abs() <= FRAME_US / 4),
-        "crossfades around segments 1 and 2 differ: {segs:?}"
-    );
-    let r = c.call_ok("edit_move_segment", json!({"from": 1, "to": 2}));
+    let r = c.call_ok("edit_move_segment", json!({"from": 0, "to": 2}));
     assert_eq!(r["manual_edits_replaced"], false, "{r}");
     // A cut that can move a beat later: the clip before it has a beat (and
     // its fade) of footage left, the segment after it is over two beats.

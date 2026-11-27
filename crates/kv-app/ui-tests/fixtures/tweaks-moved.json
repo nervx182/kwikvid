@@ -53,30 +53,30 @@
           "segments": [
             {
               "media_id": 2,
-              "src_in": 0,
-              "src_out": 2500000,
+              "src_in": 250000,
+              "src_out": 2750000,
               "timeline_start": 0,
               "transition": {
-                "type": "crossfade",
-                "duration": 500000
+                "type": "cut"
               },
               "speed": 100
             },
             {
               "media_id": 3,
-              "src_in": 2000000,
+              "src_in": 1875000,
               "src_out": 3000000,
-              "timeline_start": 2500000,
+              "timeline_start": 2000000,
               "transition": {
-                "type": "cut"
+                "type": "crossfade",
+                "duration": 500000
               },
               "speed": 50
             },
             {
               "media_id": 1,
               "src_in": 1000000,
-              "src_out": 3000000,
-              "timeline_start": 4500000,
+              "src_out": 2750000,
+              "timeline_start": 4250000,
               "transition": {
                 "type": "cut"
               },
@@ -86,7 +86,7 @@
               "media_id": 1,
               "src_in": 6000000,
               "src_out": 8000000,
-              "timeline_start": 6500000,
+              "timeline_start": 6000000,
               "transition": {
                 "type": "cut"
               },

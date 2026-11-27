@@ -436,15 +436,22 @@ fn move_segment_reorders_and_repacks() {
         }
     );
     let segs = &section(&p).edit.segments;
-    // Order: crossfade (2 s), slow (2 s on the timeline), first (4 s).
-    assert_eq!(segs[0].src_in, secs(5));
+    // Order: crossfade (1.75 s), slow (2 s on the timeline), first (3.75 s).
+    // The transition stays with the slot: slot 1 had the 0.5 s crossfade,
+    // but the slow clip starts at its media start, so there is no footage
+    // for the fade's first half and it becomes a cut. Each segment keeps
+    // what it showed between its cut points (the crossfade halves go).
+    assert_eq!(segs[0].src_in, Micros(5_250_000));
+    assert_eq!(segs[0].src_out, secs(7));
     assert_eq!(segs[0].timeline_start, Micros(0));
     assert_eq!(segs[1].media_id, MediaId(2));
-    assert_eq!(segs[1].timeline_start, secs(2));
+    assert_eq!(segs[1].transition, Transition::Cut);
+    assert_eq!(segs[1].timeline_start, Micros(1_750_000));
     assert_eq!(segs[2].src_in, secs(0));
-    assert_eq!(segs[2].timeline_start, secs(4));
+    assert_eq!(segs[2].src_out, Micros(3_750_000));
+    assert_eq!(segs[2].transition, Transition::Cut);
+    assert_eq!(segs[2].timeline_start, Micros(3_750_000));
 
-    // A crossfade overlaps the previous segment.
     p.apply(Command::MoveSegment {
         section: S,
         from: 0,
@@ -453,7 +460,118 @@ fn move_segment_reorders_and_repacks() {
     .unwrap();
     let segs = &section(&p).edit.segments;
     assert_eq!(segs[0].media_id, MediaId(2));
-    assert_eq!(segs[1].timeline_start, Micros(1_500_000));
+    assert_eq!(segs[1].timeline_start, secs(2));
+}
+
+/// A smooth-style edit: one beat per second, crossfades of 200, 250 and
+/// 300 ms centred on the beats at 1, 2 and 3 s (`src` ranges carry half a
+/// fade either side, as the auto-edit's style pass leaves them).
+fn crossfaded_edl() -> Edl {
+    let ms = |m: i64| Micros(m * 1_000);
+    let fade = |m: i64| Transition::Crossfade { duration: ms(m) };
+    let s = |id: u64, src_in: i64, src_out: i64, transition: Transition| Segment {
+        media_id: MediaId(id),
+        src_in: ms(src_in),
+        src_out: ms(src_out),
+        timeline_start: Micros(0),
+        transition,
+        speed: Speed::NORMAL,
+    };
+    let mut edl = Edl {
+        segments: vec![
+            s(1, 1_000, 2_100, Transition::Cut),
+            s(2, 4_900, 6_125, fade(200)),
+            s(1, 3_875, 5_150, fade(250)),
+            s(2, 9_850, 11_000, fade(300)),
+        ],
+    };
+    edl.repack();
+    edl
+}
+
+/// Cut points (`timeline_start + overlap / 2`) after the first segment.
+fn cut_points(segs: &[Segment]) -> Vec<i64> {
+    segs[1..]
+        .iter()
+        .map(|s| s.timeline_start.0 + s.transition.overlap().0 / 2)
+        .collect()
+}
+
+#[test]
+fn move_segment_keeps_crossfaded_cuts_on_the_beat() {
+    let mut p = project();
+    let edl = crossfaded_edl();
+    assert_eq!(cut_points(&edl.segments), [1_000_000, 2_000_000, 3_000_000]);
+    let fades: Vec<Transition> = edl.segments.iter().map(|s| s.transition).collect();
+    p.apply(Command::ReplaceEdl { section: S, edl }).unwrap();
+
+    p.apply(Command::MoveSegment {
+        section: S,
+        from: 0,
+        to: 2,
+    })
+    .unwrap();
+    let segs = &section(&p).edit.segments;
+    for (cut, beat) in cut_points(segs).into_iter().zip([1, 2, 3]) {
+        assert!(
+            (cut - secs(beat).0).abs() <= 1_000,
+            "cut at {cut} µs is off the beat at {beat} s: {segs:?}"
+        );
+    }
+    // Transitions stay with the slot.
+    let now: Vec<Transition> = segs.iter().map(|s| s.transition).collect();
+    assert_eq!(now, fades);
+    // Order B, C, A, D; every segment shows the same beat of footage, with
+    // handles for the crossfades of its new slot.
+    let src: Vec<(u64, i64, i64)> = segs
+        .iter()
+        .map(|s| (s.media_id.0, s.src_in.0 / 1_000, s.src_out.0 / 1_000))
+        .collect();
+    assert_eq!(
+        src,
+        [
+            (2, 5_000, 6_100),
+            (1, 3_900, 5_125),
+            (1, 875, 2_150),
+            (2, 9_850, 11_000),
+        ]
+    );
+    // The edit is as long as before.
+    let last = segs.last().unwrap();
+    assert_eq!(last.timeline_start.0 + last.timeline_len().0, 4_000_000);
+
+    // Moving it back restores the original edit.
+    p.apply(Command::MoveSegment {
+        section: S,
+        from: 2,
+        to: 0,
+    })
+    .unwrap();
+    assert_eq!(section(&p).edit, crossfaded_edl());
+}
+
+#[test]
+fn move_segment_shortens_a_crossfade_without_footage() {
+    let mut p = project();
+    let mut edl = crossfaded_edl();
+    // The first segment now starts at its media's start: in a crossfaded
+    // slot it has no footage for the fade's first half.
+    edl.segments[0].src_in = Micros(0);
+    edl.segments[0].src_out = Micros(1_100_000);
+    edl.repack();
+    p.apply(Command::ReplaceEdl { section: S, edl }).unwrap();
+    p.apply(Command::MoveSegment {
+        section: S,
+        from: 0,
+        to: 2,
+    })
+    .unwrap();
+    let segs = &section(&p).edit.segments;
+    assert_eq!(segs[2].src_in, Micros(0));
+    assert_eq!(segs[2].transition, Transition::Cut);
+    assert_eq!(segs[1].src_out, Micros(5_000_000));
+    assert_eq!(segs[3].transition.overlap(), Micros(300_000));
+    assert_eq!(cut_points(segs), [1_000_000, 2_000_000, 3_000_000]);
 }
 
 #[test]
