@@ -23,18 +23,22 @@ pub const OPEN: &str = "open";
 pub const SAVE: &str = "save";
 pub const SAVE_AS: &str = "save_as";
 pub const QUIT: &str = "quit";
+/// Help > Keyboard Shortcuts: the overview overlay (ui/js/shortcuts.js).
+pub const KEYBOARD_SHORTCUTS: &str = "keyboard_shortcuts";
 /// Prefix of the Open Recent items; the suffix is the index into the
 /// recent projects list.
 pub const RECENT_PREFIX: &str = "recent:";
 
-/// Item id and accelerator of every File menu shortcut. `CmdOrCtrl` is Cmd
-/// on macOS and Ctrl on Linux and Windows.
-pub const SHORTCUTS: [(&str, &str); 5] = [
+/// Item id and accelerator of every menu shortcut. `CmdOrCtrl` is Cmd on
+/// macOS and Ctrl on Linux and Windows. The shortcuts overview lists the same
+/// accelerators (`MENU_KEYS` in ui/js/shortcuts.js; a test checks it).
+pub const SHORTCUTS: [(&str, &str); 6] = [
     (NEW, "CmdOrCtrl+N"),
     (OPEN, "CmdOrCtrl+O"),
     (SAVE, "CmdOrCtrl+S"),
     (SAVE_AS, "CmdOrCtrl+Shift+S"),
     (QUIT, "CmdOrCtrl+Q"),
+    (KEYBOARD_SHORTCUTS, "CmdOrCtrl+/"),
 ];
 
 fn accelerator(id: &str) -> &'static str {
@@ -58,6 +62,8 @@ pub enum MenuAction {
     SaveAs,
     /// Quit (or close the window); the UI asks about unsaved changes first.
     Quit,
+    /// Show the keyboard shortcuts overview.
+    KeyboardShortcuts,
 }
 
 /// The action for a menu item id, given the recent projects list the menu
@@ -74,6 +80,7 @@ pub fn action_for(id: &str, recent: &[PathBuf]) -> Option<MenuAction> {
         SAVE => MenuAction::Save,
         SAVE_AS => MenuAction::SaveAs,
         QUIT => MenuAction::Quit,
+        KEYBOARD_SHORTCUTS => MenuAction::KeyboardShortcuts,
         _ => return None,
     })
 }
@@ -150,6 +157,12 @@ pub fn build<R: Runtime>(app: &AppHandle<R>, recent: &[PathBuf]) -> tauri::Resul
         .select_all()
         .build()?;
 
+    // Last in the menu bar, as the macOS HIG expects; macOS also adds its
+    // search field to a menu titled "Help".
+    let help = SubmenuBuilder::new(app, "Help")
+        .item(&item(app, KEYBOARD_SHORTCUTS, "Keyboard Shortcuts")?)
+        .build()?;
+
     let menu = MenuBuilder::new(app);
     #[cfg(target_os = "macos")]
     let menu = {
@@ -171,10 +184,14 @@ pub fn build<R: Runtime>(app: &AppHandle<R>, recent: &[PathBuf]) -> tauri::Resul
             .separator()
             .close_window()
             .build()?;
-        menu.item(&app_menu).item(&file).item(&edit).item(&window)
+        menu.item(&app_menu)
+            .item(&file)
+            .item(&edit)
+            .item(&window)
+            .item(&help)
     };
     #[cfg(not(target_os = "macos"))]
-    let menu = menu.item(&file).item(&edit);
+    let menu = menu.item(&file).item(&edit).item(&help);
     menu.build()
 }
 
@@ -203,6 +220,10 @@ mod tests {
         assert_eq!(action_for("save_as", &recent), Some(MenuAction::SaveAs));
         assert_eq!(action_for("quit", &recent), Some(MenuAction::Quit));
         assert_eq!(
+            action_for("keyboard_shortcuts", &recent),
+            Some(MenuAction::KeyboardShortcuts)
+        );
+        assert_eq!(
             action_for("recent:1", &recent),
             Some(MenuAction::OpenRecent {
                 path: PathBuf::from("/p/b.kwikvid")
@@ -222,6 +243,10 @@ mod tests {
             serde_json::json!({"action": "save_as"})
         );
         assert_eq!(
+            j(MenuAction::KeyboardShortcuts),
+            serde_json::json!({"action": "keyboard_shortcuts"})
+        );
+        assert_eq!(
             j(MenuAction::OpenRecent {
                 path: PathBuf::from("/p/a.kwikvid")
             }),
@@ -236,7 +261,25 @@ mod tests {
         assert_eq!(accelerator(SAVE), "CmdOrCtrl+S");
         assert_eq!(accelerator(SAVE_AS), "CmdOrCtrl+Shift+S");
         assert_eq!(accelerator(QUIT), "CmdOrCtrl+Q");
+        assert_eq!(accelerator(KEYBOARD_SHORTCUTS), "CmdOrCtrl+/");
         assert_eq!(accelerator("nope"), "");
+    }
+
+    /// The overview (ui/js/shortcuts.js) lists every menu accelerator, so
+    /// a new or changed menu shortcut cannot be missing from it.
+    #[test]
+    fn overview_lists_every_menu_accelerator() {
+        let js = include_str!("../ui/js/shortcuts.js");
+        let start = js
+            .find("export const MENU_KEYS")
+            .expect("MENU_KEYS in shortcuts.js");
+        let table = &js[start..start + js[start..].find("];").expect("end of MENU_KEYS")];
+        for (id, acc) in SHORTCUTS {
+            assert!(
+                table.contains(&format!("\"{acc}\"")),
+                "MENU_KEYS in ui/js/shortcuts.js lacks {acc} (menu item {id})"
+            );
+        }
     }
 
     #[test]

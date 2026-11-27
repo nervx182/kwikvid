@@ -16,6 +16,7 @@ import { initTransport, renderTransport } from "./transport.js";
 import { initStyles, renderStyles } from "./styles.js";
 import { initMusic, renderMusic } from "./music.js";
 import { initExport, renderExport } from "./export.js";
+import { initShortcuts } from "./shortcuts.js";
 
 let current = null;
 
@@ -81,6 +82,7 @@ initInspector(render);
 initStyles(run);
 initMusic(run);
 initExport(run);
+initShortcuts();
 initViewer(document.querySelector('[data-testid="viewer"]'), api.setViewerRect);
 initViewerWebGl(document.querySelector('[data-testid="viewer"]'), api);
 api.onState(render);

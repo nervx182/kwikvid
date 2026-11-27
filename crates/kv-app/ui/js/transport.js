@@ -18,6 +18,17 @@
 import * as api from "./api.js";
 import { currentBeats, setPlayhead, timeAtClientX, timelineLen } from "./timeline.js";
 
+// The keys the handler below acts on, for the shortcuts overview (shortcuts.js).
+// Notation: Tauri accelerators (CmdOrCtrl = Cmd on macOS, Ctrl elsewhere).
+export const KEYS = [
+  { group: "Playback", keys: ["Space"], description: "Play / pause" },
+  { group: "Playback", keys: ["Left", "Right"], description: "One frame back / forward" },
+  { group: "Playback", keys: ["Shift+Left", "Shift+Right"], description: "Previous / next beat" },
+  { group: "Playback", keys: ["Home"], description: "Go to the start" },
+  { group: "Playback", keys: ["End"], description: "Go to the end" },
+  { group: "View", keys: ["CmdOrCtrl+Shift+D"], description: "Preview debug overlay" },
+];
+
 export const POSITION_EVENT = "kv://position";
 const DEBUG_POLL_MS = 500;
 /** A beat this close to the playhead counts as "here" (1 ms). */

@@ -22,6 +22,16 @@ import * as api from "./api.js";
 import { SELECT_EVENT, selectedMedia } from "./library.js";
 import { FILMSTRIP_CELLS, formatTime, nearestCell, thumbUrl } from "./timeline.js";
 
+// The keys the handler below acts on, for the shortcuts overview (shortcuts.js).
+// Notation: Tauri accelerators (CmdOrCtrl = Cmd on macOS, Ctrl elsewhere).
+export const KEYS = [
+  { group: "Inspector", keys: ["I"], description: "Mark in" },
+  { group: "Inspector", keys: ["O"], description: "Mark out" },
+  { group: "Inspector", keys: ["Left", "Right"], description: "Filmstrip: back / forward 1 s" },
+  { group: "Inspector", keys: ["Shift+Left", "Shift+Right"], description: "Filmstrip: back / forward 0.1 s" },
+  { group: "Inspector", keys: ["Home", "End"], description: "Filmstrip: start / end of the clip" },
+];
+
 /** Length of a range made from a single point (µs). Quik uses a short default (guess). */
 export const DEFAULT_RANGE = 2_000_000;
 const STEP = 1_000_000;
