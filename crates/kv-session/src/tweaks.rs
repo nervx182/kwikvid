@@ -96,8 +96,9 @@ impl BeatGrid {
 impl Session {
     /// Move cut `cut` of `section` (the boundary between segments `cut - 1`
     /// and `cut`) by `beats` beats: find the beat nearest the cut's current
-    /// timeline time and apply [`Command::MoveCut`] to the beat `beats`
-    /// later (negative: earlier). `0` snaps the cut to its nearest beat. One
+    /// timeline time (the middle of a crossfade) and apply
+    /// [`Command::MoveCut`] so it lands on the beat `beats` later (negative:
+    /// earlier); a crossfade stays centred on the beat. `0` snaps the cut to its nearest beat. One
     /// undo step; never regenerates the edit.
     ///
     /// Errors (nothing changes): unknown section or cut, no music or its
@@ -117,7 +118,11 @@ impl Session {
         if cut == 0 || cut >= len {
             return Err(CoreError::CutIndexOutOfRange { cut, len }.into());
         }
-        let at = sec.edit.segments[cut].timeline_start;
+        // A crossfade sits centred on its beat (as the auto-edit places
+        // it), so its middle is the cut's time; `MoveCut` takes the incoming
+        // segment's start, half the overlap earlier.
+        let half_fade = Micros(sec.edit.segments[cut].transition.overlap().0 / 2);
+        let at = Micros(sec.edit.segments[cut].timeline_start.0 + half_fade.0);
         let music = sec.music.as_ref().ok_or(SessionError::NoMusic)?;
         let analysis = self
             .music_analysis(music)
@@ -125,7 +130,11 @@ impl Session {
         let grid = BeatGrid::new(analysis).ok_or(SessionError::NoBeatThere)?;
         let to = grid.nudge(at, beats).ok_or(SessionError::NoBeatThere)?;
         tracing::debug!(?section, cut, beats, from = at.0, to = to.0, "nudge cut");
-        self.apply(Command::MoveCut { section, cut, to })
+        self.apply(Command::MoveCut {
+            section,
+            cut,
+            to: Micros(to.0 - half_fade.0),
+        })
     }
 }
 
@@ -233,6 +242,23 @@ mod tests {
         // One undo step brings the cut back.
         s.undo().unwrap();
         assert_eq!(cuts(&s), vec![1_000, 1_500, 3_000]);
+    }
+
+    #[test]
+    fn nudge_keeps_a_crossfade_centred_on_the_beat() {
+        let mut fade = seg(1, 8_000, 9_700);
+        fade.transition = Transition::Crossfade {
+            duration: Micros(200 * MS),
+        };
+        // Cuts: 1.0 s, then a 0.2 s crossfade centred on 1.5 s.
+        let mut s = session_with(vec![seg(1, 5_000, 6_000), seg(2, 2_000, 2_600), fade], true);
+        let start = |s: &Session| s.project().sections[0].edit.segments[2].timeline_start;
+        assert_eq!(start(&s), Micros(1_400 * MS));
+        s.nudge_cut(S, 2, 1).unwrap();
+        // Centred on 2.0 s: it starts 0.1 s before.
+        assert_eq!(start(&s), Micros(1_900 * MS));
+        s.nudge_cut(S, 2, 0).unwrap();
+        assert_eq!(start(&s), Micros(1_900 * MS), "snap keeps it on its beat");
     }
 
     #[test]
