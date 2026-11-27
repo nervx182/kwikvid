@@ -14,8 +14,10 @@
 //! over 12 media items, with one 0.5 s crossfade. Source cases:
 //!
 //! - `h264-1080p30`: 12 tagged 1080p30 H.264 clips of 6 s from `kv_testkit`;
-//! - `hevc10-2160p60`: the 6 s 2160p60 HEVC Main10 clip of the `export` bench
-//!   (`benches/common/hevc10.rs`), all 12 media items pointing at it; skipped
+//! - `hevc10-2160p60`: the 6 s 2160p60 HEVC Main10 clip
+//!   [`kv_testkit::HEVC10_2160P60`] from [`kv_testkit::synthetic_clip`]
+//!   (shared with the `export` and seek benches), all 12 media items pointing
+//!   at it; skipped
 //!   with a `SKIPPED:` line when FFmpeg has no 10-bit HEVC encoder;
 //! - every checked-out regression-corpus clip (`fixtures/corpus.toml`) the
 //!   same way; missing ones are skipped by `corpus_file_or_skip!`.
@@ -64,10 +66,7 @@ use kv_render::preview::{
     CpuCompositor, FrameSink, Pacer, PreviewCompositor, PreviewConfig, PreviewEngine, PreviewStats,
     RenderedFrame, SystemClock,
 };
-use kv_testkit::{tagged_clip, ClipSpec};
-
-#[path = "common/hevc10.rs"]
-mod hevc10;
+use kv_testkit::{synthetic_clip, tagged_clip, ClipSpec, HEVC10_2160P60};
 
 /// Preview (compositor) size.
 const SIZE: (u32, u32) = (1920, 1080);
@@ -434,9 +433,7 @@ fn main() {
     bench_case(&media, "h264-1080p30", &p);
 
     // (b) 2160p60 HEVC Main10, shared with the export bench.
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("kv-render-export-bench");
-    std::fs::create_dir_all(&dir).expect("create bench dir");
-    match hevc10::hevc10_clip(&dir) {
+    match synthetic_clip(&HEVC10_2160P60) {
         Ok(path) => {
             if let Some(p) = single_source_project(&media, "hevc10-2160p60", &path) {
                 bench_case(&media, "hevc10-2160p60", &p);

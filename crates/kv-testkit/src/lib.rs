@@ -14,7 +14,8 @@
 //! `tagged_clip` and `tagged_clip_set` encode tagged MP4 clips with the system
 //! FFmpeg. Those files are the exception to byte-determinism: their bytes
 //! depend on the FFmpeg version and encoder, but every frame decodes back to
-//! its tag (`read_clip_tags`).
+//! its tag (`read_clip_tags`). `synthetic_clip` encodes camera-like H.264 or
+//! HEVC Main10 clips for the benchmarks.
 //!
 //! This is a test-support crate: functions panic on invalid parameters or I/O
 //! failure rather than returning errors, so tests can call them directly.
@@ -29,6 +30,8 @@
 mod audio;
 mod cache;
 mod corpus;
+#[cfg(feature = "video")]
+mod synth;
 mod tag;
 #[cfg(feature = "video")]
 mod video;
@@ -44,6 +47,8 @@ pub use corpus::{
     corpus_dir, corpus_file, corpus_manifest, corpus_manifest_path, sha256_file, CorpusEntry,
     CorpusManifest,
 };
+#[cfg(feature = "video")]
+pub use synth::{synthetic_clip, SynthSpec, HEVC10_2160P60};
 pub use tag::{clip_colour, read_frame_tag, render_tagged_frame, FrameTag, PALETTE_LEN};
 #[cfg(feature = "video")]
 pub use video::{read_clip_tags, tagged_clip, tagged_clip_set, ClipSpec};

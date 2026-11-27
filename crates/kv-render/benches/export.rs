@@ -9,10 +9,11 @@
 //!
 //! - `h264-1080p30`: 12 tagged 1080p30 H.264 clips of 6 s from `kv_testkit`
 //!   (`tagged_clip`, cached in `kv_testkit::fixtures_dir`);
-//! - `hevc10-2160p60`: one 6 s 2160p60 HEVC Main10 clip, generated like the
-//!   HEVC case of `crates/kv-media/benches/seek.rs` (`libx265` or
-//!   `hevc_videotoolbox`; skipped with a `SKIPPED:` line when the FFmpeg
-//!   build has neither) into `CARGO_TARGET_TMPDIR`. The 12 media items all
+//! - `hevc10-2160p60`: one 6 s 2160p60 HEVC Main10 clip,
+//!   [`kv_testkit::HEVC10_2160P60`] from [`kv_testkit::synthetic_clip`]
+//!   (`libx265` or `hevc_videotoolbox`; skipped with a `SKIPPED:` line when
+//!   the FFmpeg build has neither), cached in `kv_testkit::fixtures_dir` and
+//!   shared with `crates/kv-media/benches/seek.rs`. The 12 media items all
 //!   point at that file, so every segment opens its own reader and decodes
 //!   like a separate clip;
 //! - every checked-out regression-corpus clip (`fixtures/corpus.toml`, ADR
@@ -57,10 +58,7 @@ use kv_core::{
 };
 use kv_media::{ExportSettings, FfmpegBackend, MediaBackend, Rational};
 use kv_render::{export, ExportReport};
-use kv_testkit::{click_track, tagged_clip, ClipSpec};
-
-#[path = "common/hevc10.rs"]
-mod hevc10;
+use kv_testkit::{click_track, synthetic_clip, tagged_clip, ClipSpec, HEVC10_2160P60};
 
 /// The Roadmap I export budget.
 const TARGET: Duration = Duration::from_secs(20);
@@ -314,7 +312,7 @@ fn main() {
     bench_case(&backend, "h264-1080p30", &p);
 
     // (b) 2160p60 HEVC Main10.
-    match hevc10::hevc10_clip(&out_dir()) {
+    match synthetic_clip(&HEVC10_2160P60) {
         Ok(path) => {
             if let Some(p) = single_source_project(&backend, "hevc10-2160p60", &path, &music) {
                 bench_case(&backend, "hevc10-2160p60", &p);
