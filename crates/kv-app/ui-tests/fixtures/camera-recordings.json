@@ -1,0 +1,33 @@
+[
+  {
+    "already_copied": false,
+    "chapters": 2,
+    "files": [
+      "/Volumes/GOPRO/DCIM/100GOPRO/GX010042.MP4",
+      "/Volumes/GOPRO/DCIM/100GOPRO/GX020042.MP4"
+    ],
+    "has_gaps": false,
+    "modified": 1720949400000,
+    "total_bytes": 7516192768
+  },
+  {
+    "already_copied": true,
+    "chapters": 1,
+    "files": [
+      "/Volumes/GOPRO/DCIM/100GOPRO/GX010043.MP4"
+    ],
+    "has_gaps": false,
+    "modified": 1720949400000,
+    "total_bytes": 1073741824
+  },
+  {
+    "already_copied": false,
+    "chapters": 1,
+    "files": [
+      "/Volumes/GOPRO/DCIM/100GOPRO/GX010044.MP4"
+    ],
+    "has_gaps": false,
+    "modified": 1721035800000,
+    "total_bytes": 536870912
+  }
+]

@@ -197,6 +197,19 @@ impl Library {
             .collect()
     }
 
+    /// Import `paths` into the session and queue the added items'
+    /// filmstrips: the report, the new snapshot and the `queued` updates
+    /// (neither emitted). Blocking: probing reads the files.
+    pub(crate) fn import_paths(
+        &self,
+        state: &AppState,
+        paths: &[PathBuf],
+    ) -> Result<(ImportReport, Snapshot, Vec<JobUpdate>), IpcError> {
+        let (ctx, _) = self.jobs()?;
+        let (report, snapshot, jobs) = import_into(&mut *state.session()?, ctx, paths)?;
+        Ok((report, snapshot, self.submit_filmstrips(jobs)))
+    }
+
     /// Queue the filmstrip of every video item in `session` that has no
     /// thumbnails and whose files all exist (e.g. after New or Open); the
     /// updates to emit. Items with a pending filmstrip job are skipped.
@@ -300,12 +313,9 @@ async fn import_and_notify<R: Runtime>(
 ) -> Result<ImportReport, IpcError> {
     let worker = app.clone();
     let (report, snapshot, updates) = tauri::async_runtime::spawn_blocking(move || {
-        let library = worker.state::<Library>();
-        let (ctx, _) = library.jobs()?;
-        let state = worker.state::<AppState>();
-        let (report, snapshot, jobs) = import_into(&mut *state.session()?, ctx, &paths)?;
-        let updates = library.submit_filmstrips(jobs);
-        Ok::<_, IpcError>((report, snapshot, updates))
+        worker
+            .state::<Library>()
+            .import_paths(&worker.state::<AppState>(), &paths)
     })
     .await
     .map_err(|e| IpcError {
@@ -434,7 +444,7 @@ pub fn register<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use kv_audio::MusicAnalysis;
     use kv_core::{Command, Micros};
@@ -497,7 +507,8 @@ mod tests {
         }
     }
 
-    fn ctx() -> JobContext {
+    /// Fake backends: 2 s videos, no music, tiny thumbnails.
+    pub(crate) fn ctx() -> JobContext {
         JobContext {
             media: Arc::new(FakeMedia),
             analyzer: Arc::new(NoMusic),

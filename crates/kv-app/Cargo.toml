@@ -26,6 +26,8 @@ kv-session = { path = "../kv-session" }
 # Blocks on wgpu's adapter/device requests (as kv-render). MIT OR Apache-2.0.
 pollster = "0.4"
 serde.workspace = true
+# The remembered camera import folder (`camera-import.json`).
+serde_json.workspace = true
 # macos-private-api: transparent webview over the native preview layer (ADR 0007).
 tauri = { version = "2.12", features = ["macos-private-api"] }
 tauri-plugin-dialog = "2"
@@ -46,7 +48,6 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 
 [dev-dependencies]
 kv-audio = { path = "../kv-audio" }
-serde_json.workspace = true
 tempfile = "3"
 
 [lints]
