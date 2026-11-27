@@ -16,6 +16,6 @@ test("the shell renders the initial snapshot", async ({ page, mock }) => {
   await mock.open(snapshots.initial);
   await expect(page.locator("#library-summary")).toHaveText("No clips yet.");
   await expect(page.locator("#timeline-summary")).toHaveText("No edit yet.");
-  await expect(page.getByTestId("inspector")).toContainText("Unsaved");
+  await expect(page.getByTestId("inspector-summary")).toHaveText("Select a clip to see it here");
   expect(await mock.commands("get_state")).toHaveLength(1);
 });
