@@ -58,7 +58,16 @@ pub enum Command {
         range: RangeRef,
     },
     /// Move the segment at index `from` so it ends up at index `to`, then
-    /// repack the timeline.
+    /// repack the timeline. Transitions stay with the slot, not the segment:
+    /// the transition into index `k` is the same before and after, and every
+    /// segment keeps the footage it shows between its cut points (the middle
+    /// of each crossfade), so the cut points stay where they were (on the
+    /// beat) and only the order of what plays between them changes. Each
+    /// moved segment's crossfade handles (`src_in` / `src_out` extended by
+    /// half a crossfade) are rebuilt for its new slot; a crossfade that would
+    /// need footage outside the media, or whose half is longer than either
+    /// neighbour's footage between its cut points, is shortened (to a cut if
+    /// nothing is left). Edits with only cuts are reordered as they are.
     MoveSegment {
         section: SectionId,
         from: usize,
@@ -303,16 +312,17 @@ impl Project {
                 Ok(Event::RangeUnexcluded { section, range })
             }
             Command::MoveSegment { section, from, to } => {
-                let s = self.section_mut(section)?;
+                let s = self
+                    .section(section)
+                    .ok_or(CoreError::UnknownSection(section))?;
                 let len = s.edit.segments.len();
                 for index in [from, to] {
                     if index >= len {
                         return Err(CoreError::SegmentIndexOutOfRange { index, len });
                     }
                 }
-                let seg = s.edit.segments.remove(from);
-                s.edit.segments.insert(to, seg);
-                s.edit.repack();
+                let edl = move_segment(&s.edit, from, to, |id| self.duration_of(id))?;
+                self.section_mut(section)?.edit = edl;
                 Ok(Event::SegmentMoved { section, from, to })
             }
             Command::SetSeed { section, seed } => {
@@ -465,6 +475,90 @@ fn move_cut(
         }
     }
     Ok(edl)
+}
+
+/// [`Command::MoveSegment`] on a copy of `edl` (indices already checked).
+fn move_segment(
+    edl: &Edl,
+    from: usize,
+    to: usize,
+    duration_of: impl Fn(MediaId) -> Result<Micros, CoreError>,
+) -> Result<Edl, CoreError> {
+    let segs = &edl.segments;
+    let n = segs.len();
+    // Effective overlap into each slot, as `Edl::repack` computes it.
+    let overlap: Vec<i64> = (0..n)
+        .map(|i| match i {
+            0 => 0,
+            _ => segs[i]
+                .transition
+                .overlap()
+                .0
+                .min(segs[i - 1].timeline_len().0),
+        })
+        .collect();
+    // Half a crossfade belongs to each side; an odd microsecond goes to the
+    // outgoing segment, so the cut point is `timeline_start + overlap / 2`.
+    let lead = |d: i64| d / 2;
+    let trail = |d: i64| d - d / 2;
+    // Each segment's footage between its cut points, in source time.
+    let mut cores: Vec<(Segment, i64, i64)> = segs
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let out = overlap.get(i + 1).copied().unwrap_or(0);
+            let core_in = s.src_in.0 + src_of(lead(overlap[i]), s.speed);
+            let core_out = s.src_out.0 - src_of(trail(out), s.speed);
+            (s.clone(), core_in, core_out)
+        })
+        .collect();
+    let moved = cores.remove(from);
+    cores.insert(to, moved);
+
+    // Room each segment has on the timeline before and after its core:
+    // media bounds, and the core itself (a fade never outlasts it).
+    let mut room_before = Vec::with_capacity(n);
+    let mut room_after = Vec::with_capacity(n);
+    for (s, core_in, core_out) in &cores {
+        let core_len = timeline_of(core_out - core_in, s.speed).max(0);
+        let dur = duration_of(s.media_id)?.0;
+        room_before.push(timeline_of(*core_in, s.speed).clamp(0, core_len));
+        room_after.push(timeline_of(dur - core_out, s.speed).clamp(0, core_len));
+    }
+    let mut fade = vec![0i64; n + 1];
+    for k in 1..n {
+        let room = room_after[k - 1].min(room_before[k]);
+        fade[k] = overlap[k].min(room.saturating_mul(2));
+    }
+
+    let mut out = edl.clone();
+    for (k, (seg, (mut s, core_in, core_out))) in out.segments.iter_mut().zip(cores).enumerate() {
+        s.src_in = Micros(core_in - src_of(lead(fade[k]), s.speed));
+        s.src_out = Micros(core_out + src_of(trail(fade[k + 1]), s.speed));
+        // The slot's transition, shortened if it had to be.
+        s.transition = match segs[k].transition {
+            _ if k == 0 || fade[k] == overlap[k] => segs[k].transition,
+            _ if fade[k] == 0 => Transition::Cut,
+            _ => Transition::Crossfade {
+                duration: Micros(fade[k]),
+            },
+        };
+        *seg = s;
+    }
+    out.repack();
+    Ok(out)
+}
+
+/// [`scale_by_speed`] for `i64` values.
+fn src_of(timeline: i64, speed: Speed) -> i64 {
+    i64::try_from(scale_by_speed(i128::from(timeline), speed)).unwrap_or(i64::MAX)
+}
+
+/// A source duration converted to timeline time at `speed` (rounded toward
+/// zero).
+fn timeline_of(src: i64, speed: Speed) -> i64 {
+    let t = i128::from(src) * i128::from(Speed::NORMAL.0) / i128::from(speed.0.max(1));
+    i64::try_from(t).unwrap_or(i64::MAX)
 }
 
 /// A timeline duration converted to source time at `speed` (rounded toward
