@@ -647,3 +647,187 @@ fn title_card_is_drawn_over_the_opening_frames() {
     // After 1 s (frame 30) plus a frame of encoder slack: no text.
     assert!(added[31..].iter().all(|&n| n.abs() < 30), "{added:?}");
 }
+
+/// Everything an export hands its encoder, in order.
+#[derive(Debug, Clone, PartialEq)]
+enum Written {
+    Video(kv_media::VideoFrame),
+    Audio(Vec<f32>),
+    Finish,
+}
+
+/// An `Encoder` that keeps every frame and sample buffer it is given and
+/// creates (and removes nothing but) an empty file at the output path.
+#[derive(Default, Clone)]
+struct Recorder(std::sync::Arc<std::sync::Mutex<Vec<Written>>>);
+
+struct RecordingWriter(std::sync::Arc<std::sync::Mutex<Vec<Written>>>);
+
+impl kv_media::Encoder for Recorder {
+    fn create(
+        &self,
+        path: &Path,
+        settings: &ExportSettings,
+    ) -> kv_media::Result<Box<dyn kv_media::VideoWriter>> {
+        settings.validate()?;
+        std::fs::write(path, b"").unwrap();
+        Ok(Box::new(RecordingWriter(self.0.clone())))
+    }
+
+    fn supports(&self, _: kv_media::VideoCodec) -> bool {
+        true
+    }
+}
+
+impl kv_media::VideoWriter for RecordingWriter {
+    fn encoder_name(&self) -> &str {
+        "recorder"
+    }
+    fn write_video(&mut self, f: &kv_media::VideoFrame) -> kv_media::Result<()> {
+        self.0.lock().unwrap().push(Written::Video(f.clone()));
+        Ok(())
+    }
+    fn write_audio(&mut self, s: &[f32]) -> kv_media::Result<()> {
+        self.0.lock().unwrap().push(Written::Audio(s.to_vec()));
+        Ok(())
+    }
+    fn finish(self: Box<Self>) -> kv_media::Result<()> {
+        self.0.lock().unwrap().push(Written::Finish);
+        Ok(())
+    }
+}
+
+/// The tagged edit of [`project`] (cuts, a crossfade, a reader reopened)
+/// with a slow-motion segment appended, so the decode stage's blends and
+/// frame reuse are covered too.
+fn project_with_slow_motion() -> (Project, PathBuf) {
+    let (mut p, root) = project();
+    let edl = &mut p.sections[0].edit;
+    edl.segments.push(Segment {
+        speed: Speed(50),
+        ..seg(2, 0.2, 0.8, Transition::Crossfade { duration: us(0.2) })
+    });
+    edl.repack();
+    (p, root)
+}
+
+#[test]
+fn pipelined_export_hands_the_encoder_exactly_what_the_serial_one_does() {
+    let (project, root) = project_with_slow_motion();
+    let backend = FfmpegBackend::new().unwrap();
+    let run = |lookahead: usize, name: &str| {
+        let rec = Recorder::default();
+        let out = out_dir().join(name);
+        let mut progress = Vec::new();
+        let report = kv_render::export_with_lookahead(
+            &project,
+            Project::DEFAULT_SECTION,
+            &root,
+            &backend,
+            &rec,
+            &out,
+            &settings(),
+            &mut |p| {
+                progress.push(p);
+                ControlFlow::Continue(())
+            },
+            lookahead,
+        )
+        .unwrap();
+        let written = rec.0.lock().unwrap().clone();
+        (report.frames, progress, written, report.duration)
+    };
+    let serial = run(0, "serial.mp4");
+    for lookahead in [1, kv_render::DECODE_AHEAD] {
+        let piped = run(lookahead, &format!("pipelined-{lookahead}.mp4"));
+        assert_eq!(piped.0, serial.0, "frame count, lookahead {lookahead}");
+        assert_eq!(piped.1, serial.1, "progress, lookahead {lookahead}");
+        assert_eq!(
+            piped.2.len(),
+            serial.2.len(),
+            "calls, lookahead {lookahead}"
+        );
+        for (k, (a, b)) in piped.2.iter().zip(&serial.2).enumerate() {
+            assert!(a == b, "call {k} differs at lookahead {lookahead}");
+        }
+    }
+
+    // The serial run really is the full edit: video, audio and a finish.
+    let videos = serial
+        .2
+        .iter()
+        .filter(|w| matches!(w, Written::Video(_)))
+        .count();
+    assert_eq!(videos as u64, serial.0);
+    let samples: usize = serial
+        .2
+        .iter()
+        .map(|w| match w {
+            Written::Audio(s) => s.len(),
+            _ => 0,
+        })
+        .sum();
+    // round(duration * rate) frames of 2 channels.
+    let frames = (serial.3 .0 as u64 * u64::from(RATE) + 500_000) / 1_000_000;
+    assert_eq!(samples as u64, frames * 2);
+    assert_eq!(serial.2.last(), Some(&Written::Finish));
+    let source_fps = |_: MediaId| Some(Rational::new(FPS, 1));
+    let frame_plan = plan(
+        &project.sections[0].edit,
+        Rational::new(FPS, 1),
+        &source_fps,
+    )
+    .unwrap();
+    assert!(
+        frame_plan
+            .iter()
+            .any(|f| f.layers.len() == 2 && f.layers[0].media_id == f.layers[1].media_id),
+        "the edit has slow-motion blends"
+    );
+}
+
+#[test]
+fn cancelling_a_pipelined_export_stops_promptly_and_removes_the_file() {
+    let (project, root) = project_with_slow_motion();
+    let backend = FfmpegBackend::new().unwrap();
+    let rec = Recorder::default();
+    let out = out_dir().join("cancelled.mp4");
+    let _ = std::fs::remove_file(&out);
+    const K: u64 = 3;
+    let mut cancelled_at = None;
+    let err = export(
+        &project,
+        Project::DEFAULT_SECTION,
+        &root,
+        &backend,
+        &rec,
+        &out,
+        &settings(),
+        &mut |p| {
+            assert!(out.exists(), "the output exists while writing");
+            if p.frame == K {
+                cancelled_at = Some(std::time::Instant::now());
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        },
+    )
+    .unwrap_err();
+    // The decode thread was blocked on a full channel; it must notice the
+    // export stopped rather than decode the rest of the edit.
+    let took = cancelled_at.unwrap().elapsed();
+    assert!(matches!(err, kv_render::RenderError::Cancelled), "{err:?}");
+    assert!(
+        took < std::time::Duration::from_secs(1),
+        "returned after {took:?}"
+    );
+    assert!(!out.exists(), "partial file removed");
+    let written = rec.0.lock().unwrap();
+    let videos = written
+        .iter()
+        .filter(|w| matches!(w, Written::Video(_)))
+        .count();
+    assert_eq!(videos as u64, K);
+    assert!(!written.contains(&Written::Finish));
+}
