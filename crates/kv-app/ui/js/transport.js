@@ -242,7 +242,8 @@ function renderDebug(d) {
   el.textContent =
     `preview ${d.backend}${d.engine ? "" : " (no engine)"} · ` +
     `seek last ${fmtMs(s.last_ms)} p50 ${fmtMs(s.p50_ms)} p95 ${fmtMs(s.p95_ms)} (n=${s.count || 0}) · ` +
-    `frames ${d.presented} shown, ${d.dropped} dropped`;
+    `frames ${d.presented} shown, ${d.dropped} dropped` +
+    (el.dataset.state ? ` · ${el.dataset.state}` : "");
   if (s.count > 0 && s.count !== state.lastLoggedCount) {
     state.lastLoggedCount = s.count;
     console.info(

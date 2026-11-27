@@ -18,6 +18,7 @@ import { initMusic, renderMusic } from "./music.js";
 import { initExport, renderExport } from "./export.js";
 import { initCamera } from "./camera.js";
 import { initShortcuts } from "./shortcuts.js";
+import { initWelcome, renderWelcome } from "./welcome.js";
 
 let current = null;
 
@@ -38,6 +39,7 @@ function render(snapshot) {
   renderSummary(snapshot);
   renderProject(snapshot);
   renderViewerWebGl(snapshot);
+  renderWelcome(snapshot);
 }
 
 function renderSummary(s) {
@@ -48,19 +50,11 @@ function renderSummary(s) {
   const cuts = p.sections.reduce((n, sec) => n + sec.edit.segments.length, 0);
   document.getElementById("timeline-summary").textContent =
     cuts === 0 ? "No edit yet." : `${cuts} cut${cuts === 1 ? "" : "s"}`;
-  const dl = document.getElementById("inspector-summary");
-  dl.replaceChildren();
-  for (const [k, v] of [
-    ["Revision", s.revision],
-    ["Sections", p.sections.length],
-    ["Unsaved", s.dirty ? "yes" : "no"],
-  ]) {
-    const dt = document.createElement("dt");
-    dt.textContent = k;
-    const dd = document.createElement("dd");
-    dd.textContent = String(v);
-    dl.append(dt, dd);
-  }
+  // No clip selected: a hint. The debug values live in the preview debug
+  // overlay (Shift+Cmd/Ctrl+D, transport.js).
+  document.getElementById("inspector-summary").textContent = "Select a clip to see it here";
+  document.getElementById("preview-debug").dataset.state =
+    `revision ${s.revision} · sections ${p.sections.length} · unsaved ${s.dirty ? "yes" : "no"}`;
 }
 
 /** Await a command; render its snapshot or toast its error. */
@@ -85,6 +79,7 @@ initStyles(run);
 initMusic(run);
 initExport(run);
 initShortcuts();
+initWelcome();
 initViewer(document.querySelector('[data-testid="viewer"]'), api.setViewerRect);
 initViewerWebGl(document.querySelector('[data-testid="viewer"]'), api);
 api.onState(render);

@@ -1,0 +1,35 @@
+/* First-run welcome panel (js/welcome.js), centred over the transparent
+   viewer (ADR 0007). Absolutely positioned so the viewer's rectangle does not
+   change; it stops above the transport bar (bottom: 44px). */
+.wel {
+  position: absolute; left: 0; right: 0; top: 0; bottom: 44px;
+  display: flex; align-items: center; justify-content: center;
+  padding: 16px;
+  pointer-events: none;
+}
+.wel[hidden], .wel [hidden] { display: none !important; }
+.wel-card {
+  pointer-events: auto;
+  max-width: 420px; width: 100%;
+  padding: 18px 20px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(23, 24, 27, 0.92);
+}
+.wel-title { margin: 0 0 12px; font-size: 15px; text-transform: none; letter-spacing: 0; color: var(--text); }
+.wel-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+.wel-step { display: flex; gap: 12px; align-items: flex-start; }
+.wel-mark {
+  flex: none; width: 24px; height: 24px; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--line); color: var(--muted); font-size: 12px;
+}
+.wel-step[data-state="active"] .wel-mark { border-color: var(--accent); color: var(--text); }
+.wel-step[data-state="done"] .wel-mark { background: #2e7d4f; border-color: #2e7d4f; color: #fff; }
+.wel-step[data-state="done"] .wel-step-title { color: var(--muted); }
+.wel-step[data-state="todo"] { opacity: 0.6; }
+.wel-body { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.wel-step-title { font-weight: 600; }
+.wel-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.wel-hint { color: var(--muted); font-size: 12px; }
+.wel-error { margin: 0; color: #ff8a80; font-size: 12px; }
