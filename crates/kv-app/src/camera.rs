@@ -26,8 +26,8 @@
 //!   not running.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::UNIX_EPOCH;
 
 use kv_session::camera::date_folder;
@@ -180,11 +180,25 @@ fn volume_name(volume: &Path) -> String {
         .into_owned()
 }
 
+/// A started import: its id, its copy, and whether its final update has
+/// been sent (the copy thread may still be exiting).
+struct Running {
+    id: u64,
+    job: CopyJob,
+    finished: Arc<AtomicBool>,
+}
+
+impl Running {
+    fn active(&self) -> bool {
+        !self.finished.load(Ordering::SeqCst) && !self.job.is_finished()
+    }
+}
+
 /// Tauri managed state: the library folder and the running import.
 pub struct CameraImports {
     config_dir: Option<PathBuf>,
     library_dir: Mutex<PathBuf>,
-    current: Mutex<Option<(u64, CopyJob)>>,
+    current: Mutex<Option<Running>>,
     next_id: AtomicU64,
 }
 
@@ -252,7 +266,7 @@ impl CameraImports {
             return Err(err("Choose a folder to copy the recordings to.".into()));
         }
         let mut current = lock(&self.current);
-        if current.as_ref().is_some_and(|(_, job)| !job.is_finished()) {
+        if current.as_ref().is_some_and(Running::active) {
             return Err(err("A camera import is already running.".into()));
         }
         let on_card = list_recordings(volume);
@@ -272,6 +286,8 @@ impl CameraImports {
         let volume = volume.to_path_buf();
         let mut import = Some(import);
         tracing::info!(id, recordings = picked.len(), volume = %volume.display(), "camera import");
+        let finished = Arc::new(AtomicBool::new(false));
+        let done_flag = Arc::clone(&finished);
         let job = CopyJob::start(picked, library_dir, move |event| {
             let update = |event, report| CameraUpdate { id, event, report };
             let out = match event {
@@ -298,17 +314,20 @@ impl CameraImports {
                 ),
                 other => update(other, None),
             };
+            if out.event.is_final() {
+                done_flag.store(true, Ordering::SeqCst);
+            }
             emit(out);
         });
-        *current = Some((id, job));
+        *current = Some(Running { id, job, finished });
         Ok(id)
     }
 
     /// Cancel import `id`; `false` when it is not the running one.
     pub fn cancel(&self, id: u64) -> bool {
         match &*lock(&self.current) {
-            Some((running, job)) if *running == id && !job.is_finished() => {
-                job.cancel();
+            Some(running) if running.id == id && running.active() => {
+                running.job.cancel();
                 true
             }
             _ => false,
@@ -376,10 +395,7 @@ pub async fn choose_camera_library_dir(app: AppHandle) -> Result<Option<PathBuf>
     use tauri_plugin_dialog::DialogExt as _;
     let imports = app.state::<CameraImports>();
     let current = imports.library_dir();
-    let mut dialog = app
-        .dialog()
-        .file()
-        .set_title("Copy camera recordings to");
+    let mut dialog = app.dialog().file().set_title("Copy camera recordings to");
     // The default folder may not exist yet; start in its parent then.
     if let Some(start) = current.ancestors().find(|d| d.is_dir()) {
         dialog = dialog.set_directory(start);
@@ -598,14 +614,18 @@ mod tests {
         };
         assert_eq!(copied.len(), 3);
         assert!(skipped.is_empty());
-        assert!(copied.iter().all(|p| p.starts_with(&c.library) && p.is_file()));
+        assert!(copied
+            .iter()
+            .all(|p| p.starts_with(&c.library) && p.is_file()));
         // Chapters import as one item each.
         let report = last.report.as_ref().unwrap();
         assert_eq!(report.added.len(), 2);
         assert_eq!(state.session().unwrap().project().media.len(), 2);
         let queued = jobs_rx.recv().unwrap();
         assert_eq!(queued.len(), 2);
-        assert!(queued.iter().all(|u| u.kind == "filmstrip" && u.state == "queued"));
+        assert!(queued
+            .iter()
+            .all(|u| u.kind == "filmstrip" && u.state == "queued"));
         assert!(!imports.cancel(id), "a finished import cannot be cancelled");
 
         let again = recordings(&c.volume, &c.library);
@@ -679,7 +699,13 @@ mod tests {
             .unwrap();
         entered.recv_timeout(Duration::from_secs(10)).unwrap();
         let e = imports
-            .begin(&c.volume, &first_files(&recs), c.library.clone(), ok, |_| {})
+            .begin(
+                &c.volume,
+                &first_files(&recs),
+                c.library.clone(),
+                ok,
+                |_| {},
+            )
             .unwrap_err();
         assert_eq!(e.message, "A camera import is already running.");
         assert!(!imports.cancel(id + 1));
@@ -701,7 +727,7 @@ mod tests {
         let id = imports
             .begin(
                 &c.volume,
-                &[big.clone()],
+                std::slice::from_ref(&big),
                 c.library.clone(),
                 |_| panic!("nothing should be imported"),
                 emit,
@@ -715,7 +741,10 @@ mod tests {
             p.file_name()
                 .is_some_and(|n| n.to_string_lossy().contains(&*name.to_string_lossy()))
         });
-        assert!(!leftover, "no partial or finished file of the cancelled copy");
+        assert!(
+            !leftover,
+            "no partial or finished file of the cancelled copy"
+        );
     }
 
     fn walk(dir: &Path) -> Vec<PathBuf> {
@@ -735,19 +764,21 @@ mod tests {
             .collect()
     }
 
-    /// A file that can no longer be read mid-copy (as when the card goes
-    /// away): `failed` with a readable message, the finished file kept,
-    /// nothing imported.
+    /// The card is removed mid-copy: `failed` with a readable message, the
+    /// chapter already copied kept, no partial file, nothing imported.
     #[test]
-    fn unreadable_file_mid_copy_keeps_finished_files_and_imports_nothing() {
+    fn card_removed_mid_copy_keeps_finished_files_and_imports_nothing() {
         let c = card();
+        // A large (sparse) first chapter, so the card can be removed while
+        // it is being copied.
+        let first = c.volume.join("DCIM/100GOPRO/GX010042.MP4");
+        std::fs::File::create(&first)
+            .unwrap()
+            .set_len(64 << 20)
+            .unwrap();
         let imports = imports(&c);
         let recs = recordings(&c.volume, &c.library);
-        // Recording 42's second chapter turns into a folder after listing:
-        // its size can be read but its contents cannot.
-        let second = recs[0].files[1].clone();
-        std::fs::remove_file(&second).unwrap();
-        std::fs::create_dir(&second).unwrap();
+        assert_eq!(recs[0].chapters, 2);
         let (emit, rx) = sender();
         imports
             .begin(
@@ -758,14 +789,24 @@ mod tests {
                 emit,
             )
             .unwrap();
+        // Once the first chapter is being copied (its file stays readable
+        // while open), the card goes away.
+        loop {
+            let u = rx.recv_timeout(Duration::from_secs(10)).unwrap();
+            assert!(!u.event.is_final(), "finished too early: {u:?}");
+            if matches!(u.event, CopyEvent::Progress { .. }) {
+                break;
+            }
+        }
+        std::fs::remove_dir_all(&c.volume).unwrap();
         let last = collect(&rx).pop().unwrap();
         let CopyEvent::Failed { message } = &last.event else {
             panic!("not failed: {last:?}");
         };
-        assert!(message.starts_with("Couldn't read \"GX020042.MP4\""), "{message}");
-        assert!(
-            message.ends_with("Files already copied were kept; nothing was imported."),
-            "{message}"
+        assert_eq!(
+            message,
+            "\"GOPRO\" was removed during the copy. \
+             Files already copied were kept; nothing was imported."
         );
         let kept = walk(&c.library);
         assert_eq!(kept.len(), 1, "{kept:?}");
@@ -792,7 +833,13 @@ mod tests {
              Files already copied were kept; nothing was imported."
         );
         let e = imports
-            .begin(&c.volume, &chosen, c.library.clone(), |_| unreachable!(), |_| {})
+            .begin(
+                &c.volume,
+                &chosen,
+                c.library.clone(),
+                |_| unreachable!(),
+                |_| {},
+            )
             .unwrap_err();
         assert_eq!(e.message, "\"GOPRO\" is no longer connected.");
         assert!(walk(&c.library).is_empty());
