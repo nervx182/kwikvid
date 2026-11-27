@@ -1,0 +1,29 @@
+/* Keyboard shortcuts overview (js/shortcuts.js). Under the unsaved-changes
+   prompt (z-index 20), which can open on top of it. */
+.sc-backdrop {
+  position: fixed; inset: 0; z-index: 15;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+}
+.sc-dialog {
+  width: 760px; max-width: calc(100vw - 32px); max-height: calc(100vh - 64px);
+  display: flex; flex-direction: column;
+  background: var(--pane); border: 1px solid var(--line); border-radius: 10px;
+  padding: 14px 18px 16px; box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+.sc-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.sc-head h2 { margin: 0; font-size: 15px; font-weight: 600; }
+.sc-groups { overflow: auto; columns: 2; column-gap: 28px; outline: none; }
+.sc-group { break-inside: avoid; margin-bottom: 12px; }
+.sc-group h3 {
+  margin: 0 0 4px; font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted);
+}
+.sc-row { display: flex; gap: 12px; align-items: baseline; padding: 3px 0; border-top: 1px solid var(--line); }
+.sc-keys { flex: 0 0 150px; color: var(--muted); white-space: nowrap; }
+.sc-desc { flex: 1; }
+.sc-keys kbd {
+  display: inline-block; min-width: 1.2em; padding: 0 4px; text-align: center;
+  font-family: inherit; font-size: 11px; line-height: 1.6; color: var(--text);
+  background: #2b2e33; border: 1px solid #3a3e44; border-radius: 4px;
+}
