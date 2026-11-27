@@ -103,7 +103,7 @@ impl KwikvidServer {
         // session lock is held, as `Session::import` needs it throughout.
         let mut session = self.lock();
         match session.import(&abs, &self.ctx) {
-            Ok((report, snapshot)) => json_result(&ImportResult {
+            Ok((report, regen)) => json_result(&ImportResult {
                 added: report.added.iter().map(|id| id.0).collect(),
                 skipped: report
                     .skipped
@@ -117,7 +117,7 @@ impl KwikvidServer {
                         reason,
                     })
                     .collect(),
-                write: WriteResult::from_snapshot(&snapshot),
+                write: WriteResult::from_regen(&regen, None),
             }),
             Err(e) => Ok(tool_error(e.to_string())),
         }
@@ -181,7 +181,7 @@ impl KwikvidServer {
         into the library as one undo step: each file is probed and its HiLights read \
         (cached), and chaptered GoPro recordings (GX01xxxx, GX02xxxx, ...) become one item. \
         Returns added (new media ids), skipped (path and reason) and the write result. \
-        It does not rebuild the edit; call edit_regenerate afterwards if music is set."
+        Like media_add, it rebuilds the edit in the same undo step."
     )]
     fn media_import(
         &self,
@@ -362,6 +362,8 @@ mod tests {
         assert_eq!(r["revision"], 1);
         assert_eq!(r["can_undo"], true);
         assert_eq!(r["edit"]["segments"], 0);
+        // The import tried to rebuild the edit; with no music it cannot.
+        assert_eq!(r["regen_error"], "Add music to create an edit.", "{r}");
         let p = server.project();
         assert_eq!(p.media.len(), 1);
         assert_eq!(p.media[0].path, "clips/GX010001.MP4");

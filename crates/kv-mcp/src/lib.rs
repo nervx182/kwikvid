@@ -48,7 +48,7 @@ pub const PROJECT_URI: &str = "project://current";
 pub const INSTRUCTIONS: &str = "kwikvid video editor. Tools: \
     project_state (read the project), \
     media_add / media_import / media_remove (library: one file, or files and folders \
-    with GoPro chapters grouped; import does not rebuild the edit), \
+    with GoPro chapters grouped; each rebuilds the edit), \
     music_set / music_clear (a section's song; music_set analyses it first and returns \
     tempo_bpm and beat count), music_beats (beat and downbeat times of the song), \
     edit_set_target_length (seconds, or full_song: true), \
