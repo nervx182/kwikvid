@@ -10,14 +10,17 @@ use std::time::Duration;
 
 use kv_audio::MusicAnalysis;
 use kv_cache::Cache;
-use kv_core::{MediaId, MediaKind, Micros};
+use kv_core::{
+    Command, Edl, MediaId, MediaKind, Micros, MusicRef, Project, SectionId, TargetLength,
+};
 use kv_media::{DecodeOptions, MediaBackend, MediaError, MediaInfo, Rational, VideoInfo};
 use kv_session::{
-    FilmstripGenerator, Job, JobContext, JobEvent, JobMessage, JobResult, JobRunner, MusicAnalyzer,
-    Session, FILMSTRIP_COUNT, FILMSTRIP_HEIGHT,
+    FilmstripGenerator, Job, JobContext, JobEvent, JobId, JobMessage, JobResult, JobRunner,
+    MusicAnalyzer, Session, FILMSTRIP_COUNT, FILMSTRIP_HEIGHT,
 };
 
 const SECOND: i64 = 1_000_000;
+const S: SectionId = Project::DEFAULT_SECTION;
 
 /// Probes by file name: `*bad*` fails, `*audio*` has no video stream,
 /// anything else is a 2 s video.
@@ -249,12 +252,17 @@ fn whole_import_is_one_undo_step_and_empty_import_records_none() {
     let mut fx = Fixture::new();
     let paths = [fx.file("a.mp4"), fx.file("b.mp4"), fx.file("c.mp4")];
     let (report, snapshot) = fx.session.import(&paths, &fx.ctx).unwrap();
+    let snapshot = snapshot.snapshot;
     assert_eq!(report.added.len(), 3);
     assert!(snapshot.can_undo && snapshot.dirty);
 
     let (report, again) = fx.session.import(&paths, &fx.ctx).unwrap();
     assert!(report.added.is_empty());
-    assert_eq!(again.revision, snapshot.revision, "nothing changed");
+    assert_eq!(
+        again.snapshot.revision, snapshot.revision,
+        "nothing changed"
+    );
+    assert_eq!(again.regen_error, None);
 
     let undone = fx.session.undo().unwrap();
     assert!(undone.project.media.is_empty());
@@ -346,4 +354,128 @@ fn thumbnails_follow_the_project_through_save_as() {
 fn no_filmstrip_job_for_unknown_items() {
     let fx = Fixture::new();
     assert_eq!(fx.session.filmstrip_job(MediaId(1)), None);
+}
+
+/// 120 bpm steady beats, `secs` long.
+fn steady_music(secs: i64) -> MusicAnalysis {
+    let beats: Vec<Micros> = (0..secs * 2).map(|i| Micros(i * SECOND / 2)).collect();
+    MusicAnalysis {
+        duration: Micros(secs * SECOND),
+        tempo_bpm: 120.0,
+        downbeats: beats.iter().step_by(4).copied().collect(),
+        beats,
+        onsets: Vec::new(),
+        energy: vec![0.3; (secs * 10) as usize],
+    }
+}
+
+/// Give the session `song` with a finished analysis and a 3 s target.
+fn set_music(fx: &mut Fixture, song: &Path, secs: i64) {
+    fx.session.handle_job_message(&JobMessage {
+        id: JobId(1),
+        job: Job::AnalyzeMusic(song.to_path_buf()),
+        event: JobEvent::Done {
+            result: JobResult::MusicAnalysis(steady_music(secs)),
+        },
+    });
+    let path = fx.session.music_project_path(song).unwrap();
+    let analyses = fx.session.analyses();
+    let mut last = None;
+    for cmd in [
+        Command::SetMusic {
+            section: S,
+            music: Some(MusicRef {
+                path,
+                duration: Micros(secs * SECOND),
+            }),
+        },
+        Command::SetTargetLength {
+            section: S,
+            target: TargetLength::Fixed {
+                length: Micros(3 * SECOND),
+            },
+        },
+    ] {
+        last = Some(fx.session.apply_and_regenerate(cmd, &analyses).unwrap());
+    }
+    // (The full-song target set with the music is longer than the footage.)
+    assert_eq!(last.unwrap().regen_error, None);
+}
+
+fn edit(fx: &Fixture) -> Edl {
+    fx.session.project().section(S).unwrap().edit.clone()
+}
+
+/// ADR 0010: importing into a project with music and an analysis rebuilds
+/// the edit in the same undo step as the import.
+#[test]
+fn import_rebuilds_the_edit_in_the_same_undo_step() {
+    let mut fx = Fixture::new();
+    let first = fx.import(&[fx.file("a.mp4"), fx.file("b.mp4")]).added;
+    let song = fx.file("song.mp3");
+    set_music(&mut fx, &song, 8);
+    let before = edit(&fx);
+    assert!(!before.segments.is_empty());
+    assert!(before.segments.iter().all(|g| first.contains(&g.media_id)));
+    let project_before = fx.session.project().clone();
+
+    let (report, r) = fx
+        .session
+        .import(&[fx.file("c.mp4"), fx.file("d.mp4")], &fx.ctx)
+        .unwrap();
+    assert_eq!(report.added.len(), 2);
+    assert_eq!(r.regen_error, None);
+    assert!(!r.manual_edits_replaced);
+    let after = edit(&fx);
+    assert_ne!(after, before, "edit rebuilt");
+    assert!(
+        after
+            .segments
+            .iter()
+            .any(|g| report.added.contains(&g.media_id)),
+        "the rebuilt edit uses the imported clips: {after:?}"
+    );
+    assert_eq!(r.snapshot.project.section(S).unwrap().edit, after);
+
+    let undone = fx.session.undo().unwrap();
+    assert_eq!(undone.project, project_before, "one undo removes both");
+}
+
+/// A rebuild that cannot run (no music) does not block the import.
+#[test]
+fn import_without_music_adds_the_items_and_reports_why() {
+    let mut fx = Fixture::new();
+    let (report, r) = fx.session.import(&[fx.file("a.mp4")], &fx.ctx).unwrap();
+    assert_eq!(report.added.len(), 1);
+    assert_eq!(r.snapshot.project.media.len(), 1);
+    assert!(r.regen_error.is_some());
+    assert!(r
+        .snapshot
+        .project
+        .section(S)
+        .unwrap()
+        .edit
+        .segments
+        .is_empty());
+}
+
+/// Manual tweaks replaced by the rebuild are reported.
+#[test]
+fn import_reports_replaced_manual_edits() {
+    let mut fx = Fixture::new();
+    fx.import(&[fx.file("a.mp4"), fx.file("b.mp4")]);
+    let song = fx.file("song.mp3");
+    set_music(&mut fx, &song, 8);
+    // A manual tweak: the first segment alone, shortened.
+    let mut tweaked = edit(&fx);
+    tweaked.segments.truncate(1);
+    tweaked.segments[0].src_out = Micros(tweaked.segments[0].src_out.0 - SECOND / 4);
+    fx.session
+        .apply(Command::ReplaceEdl {
+            section: S,
+            edl: tweaked,
+        })
+        .unwrap();
+    let (_, r) = fx.session.import(&[fx.file("c.mp4")], &fx.ctx).unwrap();
+    assert!(r.manual_edits_replaced);
 }

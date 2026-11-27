@@ -13,7 +13,7 @@ reverts the command together with the rebuild it caused.
 | --- | --- | --- |
 | `project_state` | `Session::snapshot` (read) | none |
 | `media_add` | `AddMedia` | `path`, optional `duration_us` (skips probing), `kind`, `hilights_us` |
-| `media_import` | `Session::import` (one undo step; GoPro chapters grouped; no rebuild) | `paths` (files and folders) |
+| `media_import` | `Session::import` (one undo step with the rebuild; GoPro chapters grouped) | `paths` (files and folders) |
 | `media_remove` | `RemoveMedia` (drops its pins, excludes and cuts) | `media_id` |
 | `edit_pin_range` | `PinRange` | `media_id`, `start_us`, `end_us`, optional `section` |
 | `edit_unpin_range` | `UnpinRange` | same as `edit_pin_range` (must equal a pin) |
@@ -77,8 +77,9 @@ Every write tool (including `edit_undo` / `edit_redo`) returns:
 Some tools add keys to the write result:
 
 - `media_import`: `added` (new media ids, one per recording) and `skipped`
-  (`[{"path": ..., "reason": ...}]`). Import does not rebuild the edit (as in
-  the app); call `edit_regenerate` afterwards when music is set.
+  (`[{"path": ..., "reason": ...}]`). Like `media_add`, import rebuilds the
+  edit in the same undo step (as in the app); `regen_error` says why when it
+  cannot (no music yet, analysis pending, ...).
 - `music_set`: `tempo_bpm`, `beats` (count) and `duration_us` of the analysed
   song. The song is analysed before the call returns; a song that cannot be
   analysed is an error and changes nothing.

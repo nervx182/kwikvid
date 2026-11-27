@@ -4,7 +4,9 @@
 //! groups GoPro chapter files into one recording with
 //! [`kv_gopro::group_chapters`], probes each file and reads its HiLights
 //! (cache first, like [`Job::ProbeMedia`] and [`Job::ReadHilights`]), and
-//! adds one [`MediaItem`] per recording as a single undo step. Thumbnails
+//! adds one [`MediaItem`] per recording as a single undo step, which also
+//! rebuilds the auto-edit of every section (ADR 0010, like
+//! [`Session::apply_and_regenerate`] for `AddMedia`). Thumbnails
 //! come afterwards: the caller submits [`Session::filmstrip_job`] for each
 //! added item to its [`JobRunner`](crate::JobRunner), feeds the events to
 //! [`Session::handle_job_message`], and reads them back with
@@ -27,7 +29,8 @@ use kv_gopro::ProbedFile;
 use serde::{Deserialize, Serialize};
 
 use crate::jobs::{hilights_cached, probe_cached};
-use crate::{Job, JobContext, Session, SessionError, Snapshot};
+use crate::regen::RegenSnapshot;
+use crate::{Job, JobContext, Session, SessionError};
 
 /// File extensions [`Session::import`] picks up (case-insensitive).
 pub const IMPORT_EXTENSIONS: [&str; 2] = ["mp4", "mov"];
@@ -60,15 +63,18 @@ impl Session {
     /// Import `paths` (files and folders, absolute) into the library. See the
     /// [module docs](crate::import) for what is picked up and how.
     ///
-    /// Everything added is one undo step; nothing changes (and no step is
-    /// recorded) when nothing is added. Files already in the library (same
+    /// Everything added, plus the rebuilt edit of every section (from the
+    /// session's music analyses), is one undo step; nothing changes (and no
+    /// step is recorded) when nothing is added. When the edit cannot be
+    /// rebuilt (no music yet, analysis pending, ...) the items are still
+    /// added and [`RegenSnapshot::regen_error`] says why. Files already in the library (same
     /// resolved path, as an item or as a chapter of one) are skipped, as are
     /// files that fail to probe or have no video stream.
     pub fn import(
         &mut self,
         paths: &[PathBuf],
         ctx: &JobContext,
-    ) -> Result<(ImportReport, Snapshot), SessionError> {
+    ) -> Result<(ImportReport, RegenSnapshot), SessionError> {
         let mut report = ImportReport::default();
         let files = self.collect_files(paths, &mut report);
 
@@ -102,13 +108,14 @@ impl Session {
         }
 
         let snapshot = if items.is_empty() {
-            self.snapshot()
+            RegenSnapshot::plain(self.snapshot())
         } else {
             let cmds = items
                 .into_iter()
                 .map(|item| Command::AddMedia { item })
                 .collect();
-            self.apply_group(cmds)?
+            let analyses = self.analyses();
+            self.apply_group_and_regenerate(cmds, &analyses)?
         };
         tracing::info!(
             added = report.added.len(),

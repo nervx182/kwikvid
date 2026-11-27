@@ -60,7 +60,7 @@ fn imports_real_clips_and_makes_filmstrips() {
     assert!(report.skipped.is_empty(), "{:?}", report.skipped);
     assert_eq!(report.added.len(), 3);
 
-    let media = &snapshot.project.media;
+    let media = &snapshot.snapshot.project.media;
     let paths: Vec<_> = media.iter().map(|m| m.path.as_str()).collect();
     // Grouped and ordered by folder (see `kv_gopro::group_chapters`).
     assert_eq!(
