@@ -284,7 +284,7 @@ pub struct RegenSnapshot {
 }
 
 impl RegenSnapshot {
-    fn plain(snapshot: Snapshot) -> Self {
+    pub(crate) fn plain(snapshot: Snapshot) -> Self {
         RegenSnapshot {
             snapshot,
             manual_edits_replaced: false,
@@ -376,13 +376,31 @@ impl Session {
         cmd: Command,
         source: &dyn AnalysisSource,
     ) -> Result<RegenSnapshot, SessionError> {
-        let sections = affected_sections(self.project(), &cmd);
-        if sections.is_empty() {
+        if affected_sections(self.project(), &cmd).is_empty() {
             return self.apply(cmd).map(RegenSnapshot::plain);
         }
+        self.apply_group_and_regenerate(vec![cmd], source)
+    }
+
+    /// Apply `cmds` and rebuild the edit of every section any of them
+    /// affects, all as one undo step; like [`Session::apply_and_regenerate`]
+    /// for several commands (e.g. the `AddMedia`s of an import). Errors only
+    /// when a command is rejected; then nothing changes.
+    pub(crate) fn apply_group_and_regenerate(
+        &mut self,
+        mut cmds: Vec<Command>,
+        source: &dyn AnalysisSource,
+    ) -> Result<RegenSnapshot, SessionError> {
+        let mut sections = Vec::new();
         let mut next = self.project().clone();
-        next.apply(cmd.clone())?;
-        let mut cmds = vec![cmd];
+        for cmd in &cmds {
+            for section in affected_sections(&next, cmd) {
+                if !sections.contains(&section) {
+                    sections.push(section);
+                }
+            }
+            next.apply(cmd.clone())?;
+        }
         let mut manual = false;
         let mut regen_error = None;
         for section in sections {

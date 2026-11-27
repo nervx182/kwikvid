@@ -29,9 +29,9 @@ use std::sync::{Arc, Mutex};
 use kv_cache::Cache;
 use kv_core::MediaId;
 use kv_media::{FfmpegBackend, MediaBackend};
+use kv_session::regen::RegenSnapshot;
 use kv_session::{
     AudioAnalyzer, ImportReport, Job, JobContext, JobEvent, JobMessage, JobRunner, Session,
-    Snapshot,
 };
 use serde::Serialize;
 use tauri::http::{header, Response, StatusCode};
@@ -198,13 +198,14 @@ impl Library {
     }
 
     /// Import `paths` into the session and queue the added items'
-    /// filmstrips: the report, the new snapshot and the `queued` updates
-    /// (neither emitted). Blocking: probing reads the files.
+    /// filmstrips: the report, the new snapshot (edit rebuilt, see
+    /// [`import_into`]) and the `queued` updates (neither emitted).
+    /// Blocking: probing reads the files.
     pub(crate) fn import_paths(
         &self,
         state: &AppState,
         paths: &[PathBuf],
-    ) -> Result<(ImportReport, Snapshot, Vec<JobUpdate>), IpcError> {
+    ) -> Result<(ImportReport, RegenSnapshot, Vec<JobUpdate>), IpcError> {
         let (ctx, _) = self.jobs()?;
         let (report, snapshot, jobs) = import_into(&mut *state.session()?, ctx, paths)?;
         Ok((report, snapshot, self.submit_filmstrips(jobs)))
@@ -278,13 +279,15 @@ fn real_context(cache_dir: Option<PathBuf>) -> Result<JobContext, String> {
     ))
 }
 
-/// Import `paths` into the session: the report, the new snapshot, and the
-/// filmstrip jobs of the added items (not yet submitted).
+/// Import `paths` into the session: the report, the new snapshot (the edit
+/// rebuilt in the same undo step, with `manual_edits_replaced` and
+/// `regen_error`, see [`Session::import`]), and the filmstrip jobs of the
+/// added items (not yet submitted).
 pub fn import_into(
     session: &mut Session,
     ctx: &JobContext,
     paths: &[PathBuf],
-) -> Result<(ImportReport, Snapshot, Vec<Job>), IpcError> {
+) -> Result<(ImportReport, RegenSnapshot, Vec<Job>), IpcError> {
     let (report, snapshot) = session.import(paths, ctx)?;
     let jobs = report
         .added
@@ -560,7 +563,11 @@ pub(crate) mod tests {
         assert_eq!(report.added, vec![MediaId(1)]);
         assert_eq!(report.skipped.len(), 1);
         assert_eq!(report.skipped[0].0, notes);
-        assert_eq!(snapshot.project.media.len(), 1);
+        assert_eq!(snapshot.snapshot.project.media.len(), 1);
+        assert_eq!(
+            snapshot.regen_error.as_deref(),
+            Some("Add music to create an edit.")
+        );
         assert_eq!(jobs.len(), 1);
 
         let thumb = uri("kvthumb://1/0");
