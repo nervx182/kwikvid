@@ -152,10 +152,13 @@ impl Library {
             .name("kv-job-events".into())
             .spawn(move || {
                 for msg in events {
-                    let mut update = JobUpdate::from_message(&msg);
-                    if let Ok(mut session) = app.state::<AppState>().session() {
-                        session.handle_job_message(&msg);
-                        crate::music::on_job_message(&app, &mut session, &msg, &mut update);
+                    let picks = app.try_state::<crate::music::MusicPicks>();
+                    let (update, snapshot) =
+                        apply_job_message(&app.state::<AppState>(), picks.as_deref(), &msg);
+                    // Emitted with the session unlocked: emitting the state
+                    // syncs the preview, which locks the session.
+                    if let Some(snapshot) = snapshot {
+                        crate::emit_state(&app, &snapshot);
                     }
                     // After storing the thumbnails, so a concurrent
                     // `ensure_filmstrips` sees either them or the pending job.
@@ -246,6 +249,25 @@ impl Library {
         // A set of paths; a panic elsewhere cannot leave it invalid.
         self.pending.lock().unwrap_or_else(|p| p.into_inner())
     }
+}
+
+/// Feed one job message to the session (thumbnails, analyses, a finished
+/// music pick): its `kv://job` update and, when a music pick was set, the
+/// state to emit. The session is locked only inside this call, so the
+/// caller emits with it unlocked; emitting while holding the lock
+/// deadlocked the app (the preview sync locks the session again).
+pub(crate) fn apply_job_message(
+    state: &AppState,
+    picks: Option<&crate::music::MusicPicks>,
+    msg: &JobMessage,
+) -> (JobUpdate, Option<RegenSnapshot>) {
+    let mut update = JobUpdate::from_message(msg);
+    let Ok(mut session) = state.session() else {
+        return (update, None);
+    };
+    session.handle_job_message(msg);
+    let snapshot = crate::music::on_job_message(&mut session, picks, msg, &mut update);
+    (update, snapshot)
 }
 
 /// What identifies a filmstrip job in [`Library::pending`]: its files.

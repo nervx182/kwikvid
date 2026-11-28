@@ -218,25 +218,26 @@ pub fn finish(
     Some(set())
 }
 
-/// The job event thread's hook (see `library.rs`): runs [`finish`], emits
-/// the new state, and turns `update` into a failure when the music could not
-/// be set.
-pub fn on_job_message<R: Runtime>(
-    app: &AppHandle<R>,
+/// The job event thread's hook (see `library.rs`): runs [`finish`] and
+/// returns the new state to emit, and turns `update` into a failure when the
+/// music could not be set.
+///
+/// It does not emit: the caller holds the session lock, and emitting the
+/// state (which syncs the preview, locking the session again) must wait
+/// until that lock is released.
+pub fn on_job_message(
     session: &mut Session,
+    picks: Option<&MusicPicks>,
     msg: &JobMessage,
     update: &mut JobUpdate,
-) {
-    let Some(picks) = app.try_state::<MusicPicks>() else {
-        return;
-    };
-    match finish(session, &picks, msg) {
-        Some(Ok(snapshot)) => crate::emit_state(app, &snapshot),
-        Some(Err(e)) => {
+) -> Option<RegenSnapshot> {
+    match finish(session, picks?, msg)? {
+        Ok(snapshot) => Some(snapshot),
+        Err(e) => {
             update.state = "failed";
             update.message = Some(e.message);
+            None
         }
-        None => {}
     }
 }
 
@@ -485,6 +486,59 @@ source_url = "https://example.com"
         assert!(deliver(&mut s, &picks, &done(4, path)).is_none());
         // Undo removes it again.
         assert!(s.undo().unwrap().project.sections[0].music.is_none());
+    }
+
+    /// Regression: the job event thread emitted the new state while still
+    /// holding the session lock, and the preview sync that the emit runs
+    /// locked the session again, so a finished analysis froze the app on
+    /// "Analysing…". The state now comes back to emit after the unlock.
+    #[test]
+    fn finished_pick_returns_the_state_with_the_session_unlocked() {
+        let state = crate::ipc::AppState::new(session());
+        let picks = MusicPicks::default();
+        let path = "/home/ana/Music/song.mp3";
+        start(
+            &state.session().unwrap(),
+            &picks,
+            S,
+            Path::new(path),
+            queued(4),
+        )
+        .unwrap();
+
+        let (update, snapshot) =
+            crate::library::apply_job_message(&state, Some(&picks), &done(4, path));
+        assert_eq!(update.state, "done");
+        let snapshot = snapshot.expect("the state to emit");
+        assert!(snapshot.snapshot.project.sections[0].music.is_some());
+        // What emitting does next: the preview sync locks the session.
+        let session = state.session().expect("session unlocked");
+        assert_eq!(session.project(), &snapshot.snapshot.project);
+    }
+
+    #[test]
+    fn failed_set_marks_the_update_failed_and_emits_nothing() {
+        let state = crate::ipc::AppState::new(session());
+        let picks = MusicPicks::default();
+        let path = "/home/ana/Music/song.mp3";
+        start(
+            &state.session().unwrap(),
+            &picks,
+            S,
+            Path::new(path),
+            queued(4),
+        )
+        .unwrap();
+        let failed = msg(
+            4,
+            path,
+            JobEvent::Failed {
+                message: "bad mp3".into(),
+            },
+        );
+        let (update, snapshot) = crate::library::apply_job_message(&state, Some(&picks), &failed);
+        assert_eq!(update.state, "failed");
+        assert!(snapshot.is_none());
     }
 
     #[test]
